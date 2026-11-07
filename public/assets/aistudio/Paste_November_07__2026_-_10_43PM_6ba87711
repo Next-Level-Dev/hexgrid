@@ -1,0 +1,987 @@
+# MASTER PROMPT — TURN-BASED MULTIPLAYER GRID GAME
+
+You are a senior full-stack developer responsible for building a complete, lightweight, browser-based multiplayer strategy game.
+
+The project must include both the frontend and backend in the same repository.
+
+Read this entire specification before writing code. Treat every requirement as intentional. Do not omit features, simplify game mechanics, or invent alternative rules without documenting the change.
+
+Build the project in the development phases provided after this master prompt. Complete each phase before starting the next one.
+
+---
+
+# 1. GENERAL DEVELOPMENT RULES
+
+1. First inspect the existing repository and understand its current architecture.
+2. Preserve existing technologies and working functionality whenever possible.
+3. Do not replace the entire project or introduce unnecessary dependencies.
+4. Keep the website lightweight and responsive.
+5. Keep all important game logic server-side.
+6. The frontend must never be trusted to calculate authoritative game results.
+7. The backend must validate every action, resource balance, coordinate, permission, and game state.
+8. Persist all important game data in the database.
+9. Never rely on browser memory as the authoritative source of game state.
+10. Make the implementation modular, readable, maintainable, and testable.
+11. Avoid unnecessary abstractions, excessive dependencies, and complicated infrastructure.
+12. Use UTC for all game timing.
+13. Make operations safe against duplicate execution, concurrent requests, server restarts, and interrupted processing.
+14. Never silently ignore errors.
+15. Do not leave unfinished placeholder functionality while claiming a phase is complete.
+
+For every phase:
+
+- Inspect the existing implementation before changing it.
+- Implement the requested functionality fully.
+- Add appropriate validation and error handling.
+- Add automated tests for the new functionality.
+- Run the relevant existing and new tests.
+- Fix any regressions.
+- Report the files changed and functionality implemented.
+- List any outstanding problems or decisions.
+- Do not start the next phase until the current phase meets its acceptance criteria.
+
+Do not silently invent gameplay rules.
+
+If a value or mechanic is missing from this specification, record it in a file named RULE_DECISIONS.md.
+
+For gameplay-critical unknowns, request clarification before finalizing the mechanic. For non-critical unknowns, make the behavior configurable, clearly document any provisional assumption, and avoid scattering that assumption throughout the code.
+
+---
+
+# 2. GAME OVERVIEW
+
+The game is a turn-based multiplayer strategy game played on a grid.
+
+The map consists of exactly 25 × 25 squares.
+
+Each player controls a character with:
+
+- A position on the map.
+- Health.
+- Points.
+- A list of planned actions.
+- A world peace vote.
+- A status indicating whether they are alive or dead.
+
+Players can:
+
+- Send points to other players.
+- Convert points into health.
+- Construct buildings.
+- Move one square.
+- Attack players or buildings.
+- Plan multiple actions for one round, provided they have enough points.
+- View historical game states.
+- Watch the actions of a completed round play out through animations.
+
+The game operates on a repeating daily schedule.
+
+There is currently only ONE game.
+
+Do not implement game switching, multiple simultaneous games, or player assignment to different games yet.
+
+The database structure should still use game IDs so that adding multiple games in the future does not require redesigning everything.
+
+---
+
+# 3. DAILY GAME CYCLE
+
+The game has two phases.
+
+OPEN PHASE:
+
+- Starts at 00:00 UTC.
+- Ends at 20:00 UTC.
+- Duration: 20 hours.
+
+CLOSED PHASE:
+
+- Starts at 20:00 UTC.
+- Ends at 00:00 UTC.
+- Duration: 4 hours.
+
+During the OPEN PHASE:
+
+- Players can see the current game state.
+- Players can submit planned actions.
+- Players can change their planned actions.
+- Players can change their world peace vote.
+- Players can inspect the current round's player priority order.
+
+During the CLOSED PHASE:
+
+- Players cannot see the current game state.
+- Players cannot change their planned actions.
+- Players cannot change their world peace vote.
+- Every submitted action is processed by the backend.
+- The resulting game state is calculated.
+- Every player receives 1 point for the new round.
+- The next round must not begin until processing is successful.
+
+If an error occurs during processing:
+
+- The next phase must not start.
+- The error must be recorded.
+- An administrator must be able to inspect the failure.
+- Processing must not silently skip failed actions.
+- The system must not accidentally process the same round twice.
+
+The game must use UTC, not the visitor's local timezone.
+
+Implement the schedule so it continues working after server restarts.
+
+---
+
+# 4. IMPORTANT DAY NUMBERING RULE
+
+This distinction is essential.
+
+An ACTION DAY and a GAME STATE DAY are related but are not the same thing.
+
+Example:
+
+DAY 1
+
+- Every player starts with 1 point.
+- Players submit actions.
+- These actions have day = 1 in the actions table.
+- The visible game state is day 1.
+
+DAY 2:
+
+- Day 1 actions have been calculated.
+- Every player receives 1 new point.
+- The resulting state is stored as day 2.
+- The actions submitted now have day = 2.
+
+DAY 3:
+
+- Day 2 actions have been calculated.
+- Every player receives another point.
+- The resulting state is stored as day 3.
+- New actions have day = 3.
+
+This continues indefinitely.
+
+A saved state for day N must contain the results of actions submitted on day N-1.
+
+When a player views day 2, they must see the state after day 1 actions.
+
+When they press "Progress to Next Day", the frontend must play the animations for actions submitted on day 2 and then display day 3.
+
+Do not accidentally replay day 1 actions when moving from day 2 to day 3.
+
+Every action must have an unambiguous action day.
+
+Every saved game state must have an unambiguous state day.
+
+---
+
+# 5. PLAYER RULES
+
+Every player has:
+
+- A UUID.
+- A username.
+- A profile picture URL.
+- Health.
+- Points.
+- A map position.
+- An alive/dead status.
+- A world peace vote.
+- An admin status.
+
+Initial health is 3.
+
+Health cannot exceed 3.
+
+Players can convert points into health.
+
+The exact conversion rate must be confirmed and centralized in the game rules configuration.
+
+Players receive 1 point at the beginning of every new round.
+
+Dead players:
+
+- Are displayed as dead in the player list.
+- Cannot submit actions.
+- Cannot move.
+- Cannot attack.
+- Cannot build.
+- Cannot otherwise interact with the game as active players.
+- Can only observe the game.
+
+When a player's health reaches 0, they die.
+
+Record one death in their statistics.
+
+Their character must be removed from the active player list on the map, while their dead status remains visible in the player list.
+
+---
+
+# 6. ACTION SYSTEM
+
+Players can plan multiple actions during an open phase.
+
+If a player has enough points, they can queue several actions.
+
+For example:
+
+- Heal.
+- Claim their bank.
+- Move down.
+- Move left.
+- Attack Player A for 2 points.
+
+The example requires 6 points.
+
+Actions must not necessarily execute in the order they were submitted.
+
+They execute according to the global action priority groups described below.
+
+GLOBAL ACTION PRIORITY:
+
+Priority 1: Sending points.
+
+Priority 2: Healing.
+
+Priority 3: Building.
+
+Priority 4: Moving.
+
+Priority 5: Attacking.
+
+Lower priority numbers always execute first.
+
+For example, an attack is always resolved after point transfers, healing, construction, and movement.
+
+This allows players to plan actions based on what they expect other players to do.
+
+For example:
+
+A player may plan to attack an enemy while expecting a teammate to send them points first.
+
+If the teammate does not send those points, the attack may be cancelled due to insufficient resources.
+
+Likewise, a player may move while expecting an enemy to remain in a particular position.
+
+Actions must be resolved using the actual game state at their execution time, not assumptions made when they were submitted.
+
+## Player priority
+
+Every round must assign each player a randomized priority.
+
+The randomization must be based on that round's stored random seed.
+
+A lower priority number means the player acts before another player within the same action priority group.
+
+The order must be deterministic for the entire round.
+
+It must not change when someone refreshes the page or restarts the server.
+
+Players can inspect the current round's priority list while planning actions.
+
+Example:
+
+Two players attack each other.
+
+Both attacks belong to priority group 5.
+
+The player with the better player priority attacks first.
+
+If that attack kills the other player, the dead player's later actions must be cancelled.
+
+The priority order must be recorded or reproducible from the stored seed.
+
+---
+
+# 7. RESOURCE VALIDATION AND PARTIAL ACTIONS
+
+Every action must validate the player's available points when that action is actually executed.
+
+If the player does not have enough points, the action is normally cancelled.
+
+This rule applies to:
+
+- Sending points.
+- Healing.
+- Building.
+- Moving.
+- Attacking.
+- Claiming a bank.
+
+There is an additional option for actions that use an amount variable.
+
+This option applies to:
+
+- Sending points.
+- Healing.
+- Attacking.
+
+Players can choose a setting similar to:
+
+"Take the action even when my points are not enough."
+
+When enabled:
+
+- If the requested amount is affordable, perform the requested action.
+- If the requested amount is not affordable, use all currently available points instead.
+- Reduce the action amount to the amount actually paid for.
+- Deduct the points used.
+- Continue processing the player's remaining actions.
+
+Example:
+
+A player has 2 points.
+
+They request to heal for 9 points.
+
+The partial-action option is enabled.
+
+They heal using 2 points instead.
+
+They now have 0 points.
+
+Their remaining actions will be cancelled if they cannot afford them.
+
+When the option is disabled, an unaffordable amount-based action must be cancelled rather than partially executed.
+
+Fixed-cost actions must not use partial execution.
+
+Cancelled actions must not deduct resources.
+
+Resource deductions must happen atomically with the action result.
+
+---
+
+# 8. AVAILABLE ACTIONS
+
+## 8.1 Send points
+
+Priority: 1.
+
+Players can send points to another player who is within the sender's range.
+
+Variables:
+
+- Target player.
+- Amount of points.
+
+Deduct the amount from the sender and add it to the recipient.
+
+The action must be validated by the server.
+
+The exact range calculation must be defined centrally.
+
+## 8.2 Heal
+
+Priority: 2.
+
+Players can convert points into health.
+
+Variables:
+
+- Amount of points.
+- Partial-action option.
+
+Initial health is 3.
+
+Maximum health is 3.
+
+Do not allow health to exceed 3.
+
+Use the configured conversion rate.
+
+## 8.3 Build
+
+Priority: 3.
+
+Players can construct buildings within their allowed building range.
+
+Variables:
+
+- Building type.
+- X coordinate.
+- Y coordinate.
+
+Buildings cannot be constructed underneath a player.
+
+Each building has its own cost and properties.
+
+The server must validate:
+
+- Whether the building type exists.
+- Whether the player can afford it.
+- Whether the coordinate is valid.
+- Whether the placement is allowed.
+- Whether the placement is within range.
+- Whether another object makes that placement invalid.
+
+## 8.4 Move
+
+Priority: 4.
+
+Players can move exactly one square in one of four directions.
+
+Directions:
+
+- Left.
+- Right.
+- Up.
+- Down.
+
+Cost: 1 point.
+
+A player cannot move outside the 25 × 25 map.
+
+Players cannot move into a currently occupied square.
+
+Player priority must determine the order in which competing movement actions are resolved.
+
+Buildings that explicitly block movement must also be considered.
+
+## 8.5 Attack
+
+Priority: 5.
+
+Players can attack a coordinate within their attack range.
+
+Variables:
+
+- X coordinate.
+- Y coordinate.
+- Amount of points.
+- Partial-action option.
+
+The attack targets a POSITION, not a specific player object.
+
+This is important.
+
+If an enemy moves into the targeted square before attacks are processed, the attack can hit that enemy.
+
+At execution time, inspect the actual entities at that position.
+
+Players and buildings can be attacked.
+
+If a player's health reaches 0:
+
+- Mark them dead.
+- Remove them from the active map.
+- Cancel their remaining actions.
+- Record their death.
+
+If a building's health reaches 0, remove it.
+
+The exact damage-per-point formula and range rules must be documented and centralized rather than invented in different parts of the code.
+
+---
+
+# 9. BUILDING SYSTEM
+
+Every building must have:
+
+- A unique ID.
+- A building type.
+- An owner player ID.
+- An X coordinate.
+- A Y coordinate.
+- Health.
+- Building-specific variables.
+
+## 9.1 Mine
+
+Cost: 1 point.
+
+Health: 1.
+
+Properties:
+
+- Only visible to the player who placed it.
+- Does not block movement.
+- When another player moves onto it, that player loses 1 health.
+- Mines can be destroyed by attacks.
+- When removed during round progression, they must play an explosion animation.
+
+The mine's lifecycle after triggering must be documented explicitly because the original design does not specify whether it is consumed immediately.
+
+## 9.2 Outpost
+
+Cost: 1 point.
+
+Health: 2.
+
+Purpose:
+
+- Blocks player movement.
+
+It must be possible to destroy an outpost by attacking it.
+
+It must be removed when health reaches 0.
+
+## 9.3 Nuclear silo
+
+Cost: 2 points.
+
+Health: 1.
+
+Properties:
+
+- Starts empty.
+- Starts inactive.
+- Automatically becomes armed on the following day.
+- Its owner can use it once armed.
+- Can target any coordinate because it has unlimited range.
+- Damages a 3 × 3 area around the chosen coordinate.
+
+Damage:
+
+- Center square: 2 damage.
+- All eight surrounding squares: 1 damage.
+
+A launch must have a travel animation and explosion animation.
+
+The silo can be attacked and destroyed like other buildings.
+
+The launch cost, number of launches, and any cooldown must be explicitly resolved before finalizing the mechanic. Do not silently assume these rules.
+
+## 9.4 Bank
+
+Cost: 1 point.
+
+Health: 1.
+
+Initial value: 1.
+
+Properties:
+
+- Value increases by 1 each day.
+- Maximum value: 5.
+- Can be claimed by its owner.
+- Claiming costs 1 point.
+- Claiming gives the player points equal to the bank's current value.
+- Claiming is considered a building action, therefore it has priority 3.
+- It can be destroyed by attacks.
+
+The exact timing of value increases and what happens to a bank after it is claimed must be documented explicitly.
+
+---
+
+# 10. BUILDING VISIBILITY AND COLLISION
+
+Normal buildings such as banks, outposts, and nuclear silos must be visible to every player and block movement on top of their square.
+
+Mines must only be visible to their owner.
+
+All attackable buildings can be attacked.
+
+The map must account for building collision.
+
+The mine explicitly does not block movement.
+
+Building placement cannot occur underneath a player.
+
+---
+
+# 11. ANIMATION AND VISUAL FEEDBACK
+
+All game actions must produce visual playback when a player progresses to the next day.
+
+Animations must follow the actual server-calculated execution order.
+
+Required visual effects:
+
+MOVEMENT:
+
+- Tween the player's position to the destination square.
+
+BUILDING:
+
+- Tween the building into existence through transparency.
+
+HEALING:
+
+- Show healing particles.
+
+POINT TRANSFER:
+
+- Display a yellow arrow from the sender to the recipient.
+- Outline the receiving player.
+
+ATTACK:
+
+- Display a red arrow from the attacker to the attacked square.
+- Outline the attacked square.
+
+DAMAGED PLAYER:
+
+- Show blood particles.
+
+DESTROYED BUILDING:
+
+- Tween its transparency until it disappears.
+
+MINE ACTIVATION:
+
+- Play an explosion animation when a player triggers a mine.
+
+MINE DESTRUCTION:
+
+- Play an explosion animation when a mine is removed.
+
+NUCLEAR ATTACK:
+
+- Animate the launched nuke travelling to its target.
+- Play an explosion animation.
+- Show the damage across the affected 3 × 3 area.
+
+All effects must play during the "Progress to Next Day" experience.
+
+Do not calculate damage or decide who died in the frontend.
+
+The backend must provide an ordered list of events describing what actually happened.
+
+The frontend must play those events.
+
+Animations must never change authoritative health, points, building positions, or player positions.
+
+---
+
+# 12. GAME STATE HISTORY
+
+Players must be able to select a previous day and inspect its saved game state.
+
+When viewing a previous day:
+
+- Display that day's map.
+- Display the players and their positions.
+- Display their health and points.
+- Display the buildings and their states.
+- Keep hidden mines hidden from unauthorized players.
+
+Players can select:
+
+"Progress to Next Day"
+
+This must:
+
+1. Identify the next historical state.
+2. Retrieve the events for the day being progressed through.
+3. Animate those events in their correct execution order.
+4. Display the resulting game state.
+5. Update the player's last viewed day.
+
+Viewing an old day must never reduce the player's last viewed day.
+
+Only progressing forward should increase that value.
+
+The player's default state on a future visit should be their highest day viewed.
+
+Historical states must remain independent and must not change when future days are calculated.
+
+---
+
+# 13. DATABASE SCHEMA
+
+Use UUIDs for IDs.
+
+The database must include the following logical tables.
+
+## games
+
+Fields:
+
+- id: UUID.
+- current_day: integer.
+- phase: open, closed, or over.
+- phase_started_at: timestamp.
+- phase_ends_at: timestamp.
+- locked: boolean.
+
+The locked field prevents multiple scripts from processing the same game simultaneously.
+
+## game_states
+
+Fields:
+
+- id: UUID.
+- game_id: UUID.
+- day: integer.
+- data: JSON.
+- locked: boolean.
+
+The data JSON contains:
+
+- Priority seed.
+- Player positions.
+- Player health.
+- Player points.
+- Player status effects.
+- Building list.
+- Building positions.
+- Building health.
+- Building-specific variables.
+- Other state information required to reproduce that day.
+
+A saved state must be sufficient to display the historical board without recalculating its actions.
+
+## actions
+
+Fields:
+
+- id: UUID.
+- game_id: UUID.
+- day: integer.
+- player_id: UUID.
+- data: JSON.
+
+The data JSON contains:
+
+- Selected action type.
+- Submitted variables.
+- Requested amount.
+- Partial-action setting.
+- Any necessary action order information.
+
+There can be multiple actions per player per day.
+
+## players
+
+Fields:
+
+- id: UUID.
+- games: JSON.
+- stats: JSON.
+- is_admin: boolean, default false.
+
+The games JSON identifies the games the player can access.
+
+Each game membership must contain a last_day_viewed value.
+
+This value is the historical state that should load by default.
+
+It can only increase when the player progresses to a later day.
+
+The stats JSON must contain:
+
+- Games played.
+- World peaces.
+- Last one standings.
+- Deaths.
+
+Username and profile picture URL must also be stored so administrators can manage them.
+
+## session_cookies
+
+Create a table to manage player authentication sessions.
+
+The original diagram does not specify its exact columns.
+
+Design a secure schema that supports:
+
+- Player association.
+- Session token verification.
+- Token expiration.
+- Session revocation.
+- Session creation.
+- Cookie reset.
+- Session renewal when needed.
+
+Store hashes of session secrets rather than raw reusable secrets.
+
+---
+
+# 14. GAME END CONDITIONS
+
+There are two main game-ending conditions.
+
+## 14.1 World peace
+
+Each player has a world peace vote.
+
+During the open phase, players can change their vote.
+
+If all required player votes are currently "yes", the game ends.
+
+Statistics:
+
+- Every player receives +1 games played.
+- Every living player receives +1 world peaces.
+- Each dead player receives +1 death when they die.
+
+Determine and document how votes from dead players are handled.
+
+## 14.2 Last player standing
+
+If everyone dies except one player, the game ends.
+
+Statistics:
+
+- Every player receives +1 games played.
+- The surviving player receives +1 last one standings.
+- Each dead player receives +1 death when they die.
+
+Do not award the last-one-standing statistic when the game ends through world peace.
+
+## 14.3 No active game
+
+When there is no active game:
+
+- The game remains closed.
+- Players cannot submit actions.
+- The website displays the closed-game timer/state.
+- An administrator can schedule a date to start a new game.
+
+Do not automatically start another game.
+
+Any new game has a new UUID, players can load a previously finished game and make it automatically play all days from 1 to the final one. Creating a timeline animation. (an already finished game shows mines transparently, doesnt hide them)
+
+---
+
+# 15. WEBSITE INTERFACE
+
+The website must be lightweight.
+
+The interface must include:
+
+- A large timer at the top.
+- A 25 × 25 game map.
+- Player profiles displayed on the map.
+- Usernames below their profile pictures.
+- Building representations.
+- A player list.
+- Player health and points.
+- A current priority list.
+- Action planning controls.
+- World peace voting.
+- Historical day selection.
+- Progress to Next Day functionality.
+
+The timer must display the remaining time until the next phase.
+
+During a closed phase, the timer should be the only game information displayed to normal players.
+
+When the closed phase ends and a player is still viewing an earlier day:
+
+- The timer displays 0.
+- A "Progress to Next Day" button appears.
+
+Historical states must not accidentally display the current live board.
+
+Player profile pictures should be rounded squares with a 1:1 aspect ratio.
+
+---
+
+# 16. ADMIN PANEL AND PLAYER MANAGEMENT
+
+An administrator-only panel must be available.
+
+The backend must check the authenticated player's admin status on every protected API operation.
+
+Never rely only on hiding admin buttons in the frontend.
+
+Administrators can:
+
+- Create players.
+- Generate invitation links.
+- Reset a player's existing sessions.
+- Generate new player sessions.
+- Edit player usernames.
+- Edit player profile picture URLs.
+
+Creating a player must generate a link that can be shared with that player.
+
+The link must let the player authenticate and receive a session cookie valid for 3 months.
+
+Use a secure one-time invitation token that is exchanged for an authentication cookie rather than exposing a reusable session secret in the URL.
+
+Session cookies must use appropriate security settings, including HttpOnly, Secure in production, and an appropriate SameSite policy.
+
+Administrators must be able to revoke compromised sessions.
+
+Only administrators can access player-management operations.
+
+There must be a secure initial administrator bootstrap method that does not create a public admin-registration endpoint. Probably through environment variables.
+
+---
+
+# 17. DEPLOYMENT AND AUTOMATIC UPDATES
+
+The project must have a setup.sh script.
+
+It must support automatic deployment when a new authorized GitHub push happens.
+
+Required behavior:
+
+1. Receive a GitHub push webhook.
+2. Verify that the webhook is legitimate.
+3. Pull the latest repository changes.
+4. Check whether setup.sh has changed.
+5. If setup.sh has changed, update it safely and execute the new version before continuing.
+6. Check whether required software is installed.
+7. Check the required configurations.
+8. Check cron jobs and webhook configuration.
+9. Check Caddy configuration if Caddy is used.
+10. Load configuration values from a JSON configuration file where appropriate.
+11. Update the cron script if the repository version has changed.
+12. Build the application.
+13. Start or restart the application using PM2.
+
+The setup process must be safe to execute more than once.
+
+Do not use an unsafe self-deleting script update method.
+
+Use an atomic update and process replacement/re-execution strategy.
+
+Do not allow an unauthorized GitHub webhook to deploy arbitrary code.
+
+The setup process must log failures and stop if a critical operation fails.
+
+Never silently start the old application and claim that the new version was deployed successfully.
+
+---
+
+# 18. IMPORTANT IMPLEMENTATION PRINCIPLES
+
+These requirements apply across the entire project.
+
+SERVER AUTHORITY:
+
+- Only the backend decides whether an action is valid.
+- Only the backend deducts points.
+- Only the backend applies health changes.
+- Only the backend decides deaths.
+- Only the backend resolves movement and collisions.
+- Only the backend calculates building damage.
+- Only the backend changes the current day.
+
+ATOMICITY:
+
+- Each day must be processed exactly once.
+- Each action must have a clear execution result.
+- Resource deductions and action outcomes must be consistent.
+- Concurrent processing must be prevented.
+- Failed processing must be recoverable by an administrator.
+
+REPRODUCIBILITY:
+
+- A round's player priority must remain stable.
+- Historical states must not change.
+- Recorded event order must match the backend calculation.
+- Animations must reproduce the actual outcome.
+
+SECURITY:
+
+- Validate every API request.
+- Never trust player IDs supplied by the browser.
+- Derive player identity from the authenticated session.
+- Check ownership before allowing private mine information to be returned.
+- Check admin permissions on the server.
+- Never expose session secrets.
+- Protect against unauthorized action submission and state modification.
+
+---
+
+# END OF MASTER SPECIFICATION
+
+The following phases must be completed in order.
+
