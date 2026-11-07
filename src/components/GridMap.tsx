@@ -12,7 +12,7 @@ import {
   Eye,
 } from 'lucide-react';
 import { GameStateData, Player, Building } from '../types/game';
-import { GAME_RULES, isSquareInPlayerRange } from '../game/rules';
+import { GAME_RULES, getBankClaimValue, isSquareInPlayerRange } from '../game/rules';
 
 interface ActiveFx {
   type: string;
@@ -37,6 +37,7 @@ interface GridMapProps {
   isGameOver?: boolean;
   ghostPosition?: { x: number; y: number } | null;
   showMyRange?: boolean;
+  flashTile?: { x: number; y: number; kind: 'valid' | 'invalid' } | null;
 }
 
 export const GridMap: React.FC<GridMapProps> = ({
@@ -49,6 +50,7 @@ export const GridMap: React.FC<GridMapProps> = ({
   isGameOver = false,
   ghostPosition = null,
   showMyRange = true,
+  flashTile = null,
 }) => {
   const [zoom, setZoom] = useState(1);
   const [hoverCoord, setHoverCoord] = useState<{ x: number; y: number } | null>(null);
@@ -80,42 +82,48 @@ export const GridMap: React.FC<GridMapProps> = ({
   // Find player whose range is being inspected via hover
   const hoveredPlayer = hoveredPlayerId && state?.players ? state.players[hoveredPlayerId] : null;
 
-  // The origin for the current player's actions (actual pos or ghost pos if moved)
-  const effectivePlayerPos = ghostPosition || (currentPlayer ? { x: currentPlayer.x, y: currentPlayer.y } : null);
+  // Actual position vs. projected (ghost) position after queued moves
+  const actualPlayerPos = currentPlayer ? { x: currentPlayer.x, y: currentPlayer.y } : null;
+  const effectivePlayerPos = ghostPosition || actualPlayerPos;
 
-  // Check if tile is in current player's 21-tile circular range (radiating from ghost/effective position)
-  const isTileInMyRange = (x: number, y: number) => {
-    if (!effectivePlayerPos || !currentPlayer?.isAlive) return false;
-    return isSquareInPlayerRange(effectivePlayerPos.x, effectivePlayerPos.y, x, y);
+  const isRangeAction =
+    selectedActionType === 'attack' ||
+    selectedActionType === 'build' ||
+    selectedActionType === 'send_points';
+  const isMoveAction = selectedActionType === 'move';
+  const isNukeAction = selectedActionType === 'launch_nuke';
+
+  // Check if tile is in current player's actual 21-tile circular range
+  const isTileInCurrentRange = (x: number, y: number) => {
+    if (!showMyRange || !actualPlayerPos || !currentPlayer?.isAlive) return false;
+    return isSquareInPlayerRange(actualPlayerPos.x, actualPlayerPos.y, x, y);
+  };
+
+  // Check if tile is in the projected 21-tile circular range (from the ghost position)
+  const isTileInGhostRange = (x: number, y: number) => {
+    if (!ghostPosition || !currentPlayer?.isAlive) return false;
+    return isSquareInPlayerRange(ghostPosition.x, ghostPosition.y, x, y);
+  };
+
+  // Check if tile is a cardinal neighbor of the effective position (move candidates)
+  const isMoveCandidate = (x: number, y: number) => {
+    if (!isMoveAction || !effectivePlayerPos || !currentPlayer?.isAlive) return false;
+    const isCardinalNeighbor =
+      (Math.abs(x - effectivePlayerPos.x) === 1 && y === effectivePlayerPos.y) ||
+      (Math.abs(y - effectivePlayerPos.y) === 1 && x === effectivePlayerPos.x);
+    if (!isCardinalNeighbor) return false;
+
+    const occupiedByPlayer = !!playersByCoord[`${x},${y}`];
+    const blockingBuilding = (buildingsByCoord[`${x},${y}`] || []).some(
+      (b) => GAME_RULES.BUILDINGS[b.type].blocksMovement
+    );
+    return !occupiedByPlayer && !blockingBuilding;
   };
 
   // Check if tile is in hovered player's circular range
   const isTileInHoveredRange = (x: number, y: number) => {
     if (!hoveredPlayer || !hoveredPlayer.isAlive) return false;
     return isSquareInPlayerRange(hoveredPlayer.x, hoveredPlayer.y, x, y);
-  };
-
-  // Check if tile is in specific action reach
-  const isTileInActionTargetRange = (x: number, y: number) => {
-    if (!effectivePlayerPos || !currentPlayer?.isAlive || !selectedActionType) return false;
-    const px = effectivePlayerPos.x;
-    const py = effectivePlayerPos.y;
-
-    if (selectedActionType === 'move') {
-      // 4 cardinal adjacent tiles
-      return (
-        (Math.abs(x - px) === 1 && y === py) ||
-        (Math.abs(y - py) === 1 && x === px)
-      );
-    }
-    if (selectedActionType === 'attack' || selectedActionType === 'build' || selectedActionType === 'send_points') {
-      // Circular 21-tile range
-      return isSquareInPlayerRange(px, py, x, y);
-    }
-    if (selectedActionType === 'launch_nuke') {
-      return true; // Unlimited range
-    }
-    return false;
   };
 
   const getCellCenterPx = (x: number, y: number) => {
@@ -146,6 +154,21 @@ export const GridMap: React.FC<GridMapProps> = ({
             <Footprints className="w-3 h-3" />
             Ghost: ({ghostPosition.x}, {ghostPosition.y})
           </span>
+        )}
+
+        {isRangeAction && (
+          <div className="flex items-center gap-2 border-l border-zinc-800 pl-2 ml-1 text-[9px] font-semibold text-zinc-300">
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-sm bg-sky-500/70 ring-1 ring-sky-300/60" />
+              Current
+            </span>
+            {ghostPosition && (
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-sm bg-fuchsia-500/70 ring-1 ring-fuchsia-300/60" />
+                Projected
+              </span>
+            )}
+          </div>
         )}
 
         <div className="flex items-center gap-1 border-l border-zinc-800 pl-2 ml-1">
@@ -233,14 +256,40 @@ export const GridMap: React.FC<GridMapProps> = ({
                 const playerOnTile = playersByCoord[coordKey];
                 const buildingsOnTile = buildingsByCoord[coordKey] || [];
 
-                const inMyRange = showMyRange && isTileInMyRange(x, y);
+                const inCurrentRange = isTileInCurrentRange(x, y);
+                const inGhostRange = isTileInGhostRange(x, y);
+                const moveCandidate = isMoveCandidate(x, y);
                 const inHoveredRange = isTileInHoveredRange(x, y);
-                const inActionTarget = isTileInActionTargetRange(x, y);
 
-                const isSelected = selectedTile?.x === x && selectedTile?.y === y;
-                const isCurrentPlayerActualTile =
-                  currentPlayer && currentPlayer.x === x && currentPlayer.y === y;
                 const isGhostTile = ghostPosition && ghostPosition.x === x && ghostPosition.y === y;
+                const isFlashTile = flashTile?.x === x && flashTile?.y === y;
+
+                const isSelectable = !selectedActionType
+                  ? true
+                  : isMoveAction
+                  ? moveCandidate
+                  : isNukeAction
+                  ? true
+                  : inCurrentRange || inGhostRange;
+
+                let tileTone = 'hover:bg-zinc-800/40';
+                if (inCurrentRange && inGhostRange) {
+                  tileTone = isRangeAction
+                    ? 'bg-violet-500/20 ring-1 ring-violet-400/50 hover:bg-violet-500/30'
+                    : 'bg-cyan-500/10 ring-1 ring-cyan-500/25';
+                } else if (inGhostRange) {
+                  tileTone = isRangeAction
+                    ? 'bg-fuchsia-500/15 ring-1 ring-fuchsia-400/45 hover:bg-fuchsia-500/25'
+                    : 'bg-fuchsia-500/10 ring-1 ring-fuchsia-500/25';
+                } else if (inCurrentRange) {
+                  tileTone = isRangeAction
+                    ? 'bg-sky-500/15 ring-1 ring-sky-400/45 hover:bg-sky-500/25'
+                    : 'bg-cyan-500/10 ring-1 ring-cyan-500/25';
+                } else if (moveCandidate) {
+                  tileTone = 'bg-emerald-500/15 ring-1 ring-emerald-400/45 hover:bg-emerald-500/25';
+                } else if (inHoveredRange) {
+                  tileTone = 'bg-red-500/15 ring-1 ring-red-500/30';
+                }
 
                 return (
                   <div
@@ -256,17 +305,13 @@ export const GridMap: React.FC<GridMapProps> = ({
                       }
                     }}
                     style={{ width: CELL_SIZE, height: CELL_SIZE }}
-                    className={`relative border border-zinc-800/35 cursor-pointer transition-all flex items-center justify-center ${
-                      isSelected
-                        ? 'bg-amber-500/30 ring-2 ring-amber-400 z-10'
-                        : inActionTarget
-                        ? 'bg-amber-400/20 hover:bg-amber-400/30'
-                        : inHoveredRange
-                        ? 'bg-red-500/15 ring-1 ring-red-500/30'
-                        : inMyRange
-                        ? 'bg-cyan-500/10 hover:bg-cyan-500/20 ring-1 ring-cyan-500/25'
-                        : 'hover:bg-zinc-800/40'
-                    } ${isCurrentPlayerActualTile ? 'bg-blue-950/60' : ''}`}
+                    className={`relative border border-zinc-800/35 transition-all flex items-center justify-center ${
+                      isSelectable
+                        ? selectedActionType
+                          ? 'cursor-crosshair'
+                          : 'cursor-pointer'
+                        : 'cursor-not-allowed'
+                    } ${tileTone}`}
                   >
                     {/* Buildings Layer */}
                     {buildingsOnTile.map((b) => (
@@ -275,7 +320,13 @@ export const GridMap: React.FC<GridMapProps> = ({
                         className={`absolute inset-0 flex items-center justify-center ${
                           (b as any).transparent ? 'opacity-40' : ''
                         }`}
-                        title={`${b.type.toUpperCase()} (HP: ${b.health})`}
+                        title={
+                          b.type === 'bank'
+                            ? `BANK (HP: ${b.health}) — Value: ${b.value ?? 1} (claim next round: ${getBankClaimValue(
+                                b.value ?? 1
+                              )})`
+                            : `${b.type.toUpperCase()} (HP: ${b.health})`
+                        }
                       >
                         {b.type === 'mine' && (
                           <div className="relative">
@@ -298,11 +349,28 @@ export const GridMap: React.FC<GridMapProps> = ({
                           </div>
                         )}
                         {b.type === 'bank' && (
-                          <div className="relative p-1 rounded bg-amber-950/80 border border-amber-600 text-amber-300">
+                          <div className="relative group/bank p-1 rounded bg-amber-950/80 border border-amber-600 text-amber-300">
                             <Landmark className="w-3.5 h-3.5" />
                             <span className="absolute -bottom-1 -right-1 text-[8px] font-mono font-bold bg-amber-500 text-zinc-950 rounded px-0.5 leading-none">
                               {b.value ?? 1}
                             </span>
+                            <div className="pointer-events-none absolute left-1/2 bottom-full z-50 mb-1 hidden -translate-x-1/2 whitespace-nowrap rounded-md border border-amber-700 bg-zinc-950/95 px-2 py-1 text-[9px] font-normal text-amber-200 shadow-xl group-hover/bank:block">
+                              <div className="font-bold text-amber-300">BANK</div>
+                              <div>
+                                Value now: <span className="font-mono font-bold">{b.value ?? 1}</span>
+                              </div>
+                              <div>
+                                Claim next round:{' '}
+                                <span className="font-mono font-bold text-emerald-300">
+                                  {getBankClaimValue(b.value ?? 1)}
+                                </span>
+                              </div>
+                              {b.ownerId === currentPlayer?.id && (
+                                <div className="font-semibold text-cyan-300">
+                                  Click with Build to claim
+                                </div>
+                              )}
+                            </div>
                           </div>
                         )}
                       </div>
@@ -355,6 +423,17 @@ export const GridMap: React.FC<GridMapProps> = ({
                           PLANNED POS
                         </div>
                       </div>
+                    )}
+
+                    {/* Brief confirmation flash when a tile is queued / rejected */}
+                    {isFlashTile && flashTile && (
+                      <div
+                        className={`absolute inset-0 z-40 pointer-events-none rounded-md ${
+                          flashTile.kind === 'valid'
+                            ? 'tile-flash-valid'
+                            : 'tile-flash-invalid'
+                        }`}
+                      />
                     )}
                   </div>
                 );

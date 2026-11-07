@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   GameRecord,
   GameStateData,
@@ -10,11 +10,12 @@ import {
 import { Header } from './components/Header';
 import { DaySelector } from './components/DaySelector';
 import { GridMap } from './components/GridMap';
-import { ActionPlanner } from './components/ActionPlanner';
+import { ActionPlanner, ActionConfig } from './components/ActionPlanner';
 import { PlayerRoster } from './components/PlayerRoster';
 import { AdminPanel } from './components/AdminPanel';
 import { AnimationPlaybackModal } from './components/AnimationPlaybackModal';
 import { triggerVictoryConfetti } from './utils/visualEffects';
+import { GAME_RULES, getActionPriorityGroup, isSquareInPlayerRange } from './game/rules';
 import { Clock, History, Play, ShieldAlert, ArrowRight } from 'lucide-react';
 
 export default function App() {
@@ -37,6 +38,18 @@ export default function App() {
   const [selectedTile, setSelectedTile] = useState<{ x: number; y: number } | null>(null);
   const [isSavingActions, setIsSavingActions] = useState<boolean>(false);
   const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
+  const [actionConfig, setActionConfig] = useState<ActionConfig>({
+    amount: 1,
+    allowPartial: true,
+    buildingType: 'outpost',
+    targetPlayerId: '',
+  });
+  const [flashTile, setFlashTile] = useState<{
+    x: number;
+    y: number;
+    kind: 'valid' | 'invalid';
+  } | null>(null);
+  const flashTimerRef = useRef<number | null>(null);
 
   // Animation Playback States
   const [playbackEvents, setPlaybackEvents] = useState<GameEngineEvent[] | null>(null);
@@ -135,7 +148,14 @@ export default function App() {
       const res = await fetch('/api/game/actions');
       const data = await res.json();
       if (Array.isArray(data.actions)) {
-        setPlannedActions(data.actions.map((a: any) => a.data));
+        const ordered = data.actions
+          .slice()
+          .sort(
+            (a: any, b: any) =>
+              (a.data?.orderIndex ?? 0) - (b.data?.orderIndex ?? 0)
+          )
+          .map((a: any) => a.data);
+        setPlannedActions(ordered);
       }
     } catch (err) {
       console.error('Failed to load actions:', err);
@@ -170,11 +190,27 @@ export default function App() {
     };
   }, []);
 
+  // Merge the authoritative day snapshot into the session player so ranges,
+  // ghosts and click handling always use the latest position/health/points.
+  const activePlayer = useMemo<Player | null>(() => {
+    if (!player) return null;
+    const snap = currentState?.players?.[player.id];
+    return snap ? { ...player, ...snap } : player;
+  }, [player, currentState]);
+
+  const rosterPlayers = useMemo<Player[]>(() => {
+    if (!currentState) return allPlayers;
+    return allPlayers.map((p) => {
+      const snap = currentState.players[p.id];
+      return snap ? { ...p, ...snap } : p;
+    });
+  }, [allPlayers, currentState]);
+
   // Compute Ghost Operative Position based on queued movement actions
   const ghostPosition = useMemo(() => {
-    if (!player || !player.isAlive || !game || game.currentDay === 0) return null;
-    let gx = player.x;
-    let gy = player.y;
+    if (!activePlayer || !activePlayer.isAlive || !game || game.currentDay === 0) return null;
+    let gx = activePlayer.x;
+    let gy = activePlayer.y;
     let moved = false;
 
     for (const act of plannedActions) {
@@ -187,8 +223,27 @@ export default function App() {
       }
     }
 
-    return moved ? { x: gx, y: gy } : null;
-  }, [player, plannedActions, game]);
+    return moved && (gx !== activePlayer.x || gy !== activePlayer.y) ? { x: gx, y: gy } : null;
+  }, [activePlayer, plannedActions, game]);
+
+  const flashTileAt = useCallback((x: number, y: number, kind: 'valid' | 'invalid') => {
+    setFlashTile({ x, y, kind });
+    if (flashTimerRef.current !== null) {
+      window.clearTimeout(flashTimerRef.current);
+    }
+    flashTimerRef.current = window.setTimeout(() => {
+      setFlashTile(null);
+      flashTimerRef.current = null;
+    }, 500);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (flashTimerRef.current !== null) {
+        window.clearTimeout(flashTimerRef.current);
+      }
+    };
+  }, []);
 
   const handleTogglePeaceVote = async () => {
     if (!player || game?.phase !== 'open' || !player.isAlive || game.currentDay === 0) return;
@@ -208,13 +263,147 @@ export default function App() {
     }
   };
 
-  const handleTileClick = (x: number, y: number) => {
-    setSelectedTile({ x, y });
-  };
-
-  const handleAddAction = (act: ActionData) => {
+  const queueAction = (act: ActionData) => {
     setPlannedActions((prev) => [...prev, act]);
     setSaveSuccess(false);
+  };
+
+  const handleTileClick = (x: number, y: number) => {
+    const p = activePlayer;
+    if (!p) return;
+
+    // Outside of an active planning turn, tiles remain inspectable.
+    if (!selectedActionType || isUnstarted || isClosed || !p.isAlive) {
+      setSelectedTile({ x, y });
+      return;
+    }
+
+    const origin = ghostPosition || { x: p.x, y: p.y };
+    const inCurrentRange = isSquareInPlayerRange(p.x, p.y, x, y);
+    const inGhostRange = ghostPosition
+      ? isSquareInPlayerRange(ghostPosition.x, ghostPosition.y, x, y)
+      : false;
+    const inRange = inCurrentRange || inGhostRange;
+    const dayBuildings = currentState?.buildings || [];
+
+    if (selectedActionType === 'move') {
+      const dx = x - origin.x;
+      const dy = y - origin.y;
+      let direction: ActionData['direction'];
+      if (dx === 0 && dy === -1) direction = 'up';
+      else if (dx === 0 && dy === 1) direction = 'down';
+      else if (dx === -1 && dy === 0) direction = 'left';
+      else if (dx === 1 && dy === 0) direction = 'right';
+
+      if (!direction) {
+        flashTileAt(x, y, 'invalid');
+        return;
+      }
+
+      const occupiedByPlayer = rosterPlayers.some(
+        (op) => op.isAlive && op.x === x && op.y === y
+      );
+      const blockingBuilding = dayBuildings.some(
+        (b) => b.x === x && b.y === y && GAME_RULES.BUILDINGS[b.type].blocksMovement
+      );
+      if (occupiedByPlayer || blockingBuilding) {
+        flashTileAt(x, y, 'invalid');
+        return;
+      }
+
+      setSelectedTile({ x, y });
+      queueAction({ actionType: 'move', direction });
+      flashTileAt(x, y, 'valid');
+      return;
+    }
+
+    if (selectedActionType === 'attack') {
+      if (!inRange) {
+        flashTileAt(x, y, 'invalid');
+        return;
+      }
+      setSelectedTile({ x, y });
+      queueAction({
+        actionType: 'attack',
+        x,
+        y,
+        amount: actionConfig.amount,
+        allowPartial: actionConfig.allowPartial,
+      });
+      flashTileAt(x, y, 'valid');
+      return;
+    }
+
+    if (selectedActionType === 'build') {
+      if (!inRange) {
+        flashTileAt(x, y, 'invalid');
+        return;
+      }
+
+      const ownBank = dayBuildings.find(
+        (b) =>
+          b.type === 'bank' && b.ownerId === p.id && !b.isSpent && b.x === x && b.y === y
+      );
+
+      if (ownBank) {
+        setSelectedTile({ x, y });
+        queueAction({ actionType: 'claim_bank', buildingId: ownBank.id, x, y });
+        flashTileAt(x, y, 'valid');
+        return;
+      }
+
+      const occupiedByPlayer = rosterPlayers.some((op) => op.isAlive && op.x === x && op.y === y);
+      const occupiedByBuilding = dayBuildings.some((b) => b.x === x && b.y === y);
+      if (occupiedByPlayer || occupiedByBuilding) {
+        flashTileAt(x, y, 'invalid');
+        return;
+      }
+
+      setSelectedTile({ x, y });
+      queueAction({ actionType: 'build', buildingType: actionConfig.buildingType, x, y });
+      flashTileAt(x, y, 'valid');
+      return;
+    }
+
+    if (selectedActionType === 'send_points') {
+      if (!inRange) {
+        flashTileAt(x, y, 'invalid');
+        return;
+      }
+      const target = rosterPlayers.find(
+        (op) => op.isAlive && op.id !== p.id && op.x === x && op.y === y
+      );
+      if (!target) {
+        flashTileAt(x, y, 'invalid');
+        return;
+      }
+      setSelectedTile({ x, y });
+      setActionConfig((cfg) => ({ ...cfg, targetPlayerId: target.id }));
+      queueAction({
+        actionType: 'send_points',
+        targetPlayerId: target.id,
+        amount: actionConfig.amount,
+        allowPartial: actionConfig.allowPartial,
+      });
+      flashTileAt(x, y, 'valid');
+      return;
+    }
+
+    if (selectedActionType === 'launch_nuke') {
+      const silo = dayBuildings.find(
+        (b) => b.type === 'silo' && b.ownerId === p.id && b.isArmed && !b.isSpent
+      );
+      if (!silo) {
+        flashTileAt(x, y, 'invalid');
+        return;
+      }
+      setSelectedTile({ x, y });
+      queueAction({ actionType: 'launch_nuke', buildingId: silo.id, x, y });
+      flashTileAt(x, y, 'valid');
+      return;
+    }
+
+    setSelectedTile({ x, y });
   };
 
   const handleRemoveAction = (index: number) => {
@@ -227,10 +416,20 @@ export default function App() {
     setIsSavingActions(true);
     setSaveSuccess(false);
     try {
+      // Submit in resolution-priority order so orderIndex mirrors what the UI shows.
+      const orderedActions = plannedActions
+        .map((act, originalIndex) => ({ act, originalIndex }))
+        .sort((a, b) => {
+          const groupDiff =
+            getActionPriorityGroup(a.act.actionType) - getActionPriorityGroup(b.act.actionType);
+          return groupDiff !== 0 ? groupDiff : a.originalIndex - b.originalIndex;
+        })
+        .map(({ act }) => act);
+
       const res = await fetch('/api/game/actions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ actions: plannedActions }),
+        body: JSON.stringify({ actions: orderedActions }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -373,7 +572,7 @@ export default function App() {
       <div className="absolute inset-0 z-0 flex items-center justify-center">
         <GridMap
           state={currentState}
-          currentPlayer={player}
+          currentPlayer={activePlayer}
           selectedActionType={selectedActionType}
           onTileClick={handleTileClick}
           selectedTile={selectedTile}
@@ -381,6 +580,7 @@ export default function App() {
           isGameOver={isGameOver}
           ghostPosition={ghostPosition}
           showMyRange={!isUnstarted}
+          flashTile={flashTile}
         />
       </div>
 
@@ -493,15 +693,22 @@ export default function App() {
             <div className="pointer-events-auto max-w-md w-full">
               {!isUnstarted ? (
                 <ActionPlanner
-                  player={player}
-                  allPlayers={allPlayers}
+                  player={activePlayer}
+                  allPlayers={rosterPlayers}
                   buildings={currentState?.buildings || []}
                   selectedTile={selectedTile}
                   actions={plannedActions}
-                  onAddAction={handleAddAction}
+                  actionConfig={actionConfig}
+                  onActionConfigChange={(patch) =>
+                    setActionConfig((cfg) => ({ ...cfg, ...patch }))
+                  }
+                  onAddAction={queueAction}
                   onRemoveAction={handleRemoveAction}
                   onSubmitActions={handleSubmitActions}
-                  onSelectActionType={(actType) => setSelectedActionType(actType)}
+                  onSelectActionType={(actType) => {
+                    setSelectedActionType(actType);
+                    setSelectedTile(null);
+                  }}
                   selectedActionType={selectedActionType}
                   isClosed={isClosed}
                   isSaving={isSavingActions}

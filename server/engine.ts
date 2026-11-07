@@ -80,6 +80,39 @@ export class GameEngine {
       return orderA - orderB;
     });
 
+    // Project each player's position after their queued movement. This lets
+    // range-limited actions that resolve before movement (transfer/build/claim)
+    // be planned from the ghost position, matching the client's dual-range UI.
+    const projectedPositions = new Map<string, { x: number; y: number }>();
+    for (const [pid, p] of Object.entries(players)) {
+      projectedPositions.set(pid, { x: p.x, y: p.y });
+    }
+    for (const act of sortedActions) {
+      if (act.data.actionType !== 'move') continue;
+      const pos = projectedPositions.get(act.playerId);
+      if (!pos) continue;
+      const dir = act.data.direction;
+      if (dir === 'up' && pos.y > GAME_RULES.MIN_COORD) pos.y -= 1;
+      else if (dir === 'down' && pos.y < GAME_RULES.MAX_COORD) pos.y += 1;
+      else if (dir === 'left' && pos.x > GAME_RULES.MIN_COORD) pos.x -= 1;
+      else if (dir === 'right' && pos.x < GAME_RULES.MAX_COORD) pos.x += 1;
+    }
+
+    // Accept targets in either the player's current reach or projected reach.
+    const isInActionReach = (
+      playerId: string,
+      currentX: number,
+      currentY: number,
+      targetX: number,
+      targetY: number
+    ) => {
+      if (isSquareInPlayerRange(currentX, currentY, targetX, targetY)) return true;
+      const projected = projectedPositions.get(playerId);
+      if (!projected) return false;
+      if (projected.x === currentX && projected.y === currentY) return false;
+      return isSquareInPlayerRange(projected.x, projected.y, targetX, targetY);
+    };
+
     // Helper functions
     const isOccupiedByLivingPlayer = (x: number, y: number, excludePlayerId?: string) => {
       return Object.values(players).some(
@@ -173,7 +206,7 @@ export class GameEngine {
           continue;
         }
 
-        if (!isSquareInPlayerRange(actor.x, actor.y, target.x, target.y)) {
+        if (!isInActionReach(actor.id, actor.x, actor.y, target.x, target.y)) {
           events.push({
             id: uuidv4(),
             type: 'cancelled',
@@ -265,8 +298,8 @@ export class GameEngine {
           continue;
         }
 
-        // Validate circular range (5x5 excluding corners/self)
-        if (!isSquareInPlayerRange(actor.x, actor.y, targetX, targetY)) {
+        // Validate circular range (current or projected ghost position)
+        if (!isInActionReach(actor.id, actor.x, actor.y, targetX, targetY)) {
           events.push({
             id: uuidv4(),
             type: 'cancelled',
@@ -328,11 +361,18 @@ export class GameEngine {
         });
       }
 
-      // --- Priority 3: CLAIM BANK ---
+      // --- Priority 3: CLAIM BANK (queued by clicking an owned bank) ---
       else if (actionType === 'claim_bank') {
-        const bank = buildings.find(
-          (b) => b.type === 'bank' && b.ownerId === actor.id && !b.isSpent
-        );
+        const requestedBankId = act.data.buildingId;
+        const bank = requestedBankId
+          ? buildings.find(
+              (b) =>
+                b.id === requestedBankId &&
+                b.type === 'bank' &&
+                b.ownerId === actor.id &&
+                !b.isSpent
+            )
+          : buildings.find((b) => b.type === 'bank' && b.ownerId === actor.id && !b.isSpent);
 
         if (!bank) {
           events.push({
@@ -341,6 +381,17 @@ export class GameEngine {
             playerId: actor.id,
             reason: 'No active bank owned by player',
             description: `${actor.username} has no active bank to claim`,
+          });
+          continue;
+        }
+
+        if (!isInActionReach(actor.id, actor.x, actor.y, bank.x, bank.y)) {
+          events.push({
+            id: uuidv4(),
+            type: 'cancelled',
+            playerId: actor.id,
+            reason: 'Bank out of circular 21-tile reach',
+            description: `${actor.username}'s bank claim at (${bank.x}, ${bank.y}) was out of range`,
           });
           continue;
         }

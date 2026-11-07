@@ -177,6 +177,17 @@ export function getPlayerRangeCoordinates(
 }
 
 /**
+ * Returns the bank value that will be available when the current round resolves.
+ * Banks appreciate by +1 at the start of each round, capped at maxValue.
+ */
+export function getBankClaimValue(currentValue: number): number {
+  return Math.min(
+    currentValue + GAME_RULES.BUILDINGS.bank.valueIncreasePerDay,
+    GAME_RULES.BUILDINGS.bank.maxValue
+  );
+}
+
+/**
  * Generates a randomized player spawn position complying with:
  * - Never in the outer 2 layers (X in [2, 22], Y in [2, 22])
  * - Never directly adjacent to any existing player (Chebyshev distance > 1)

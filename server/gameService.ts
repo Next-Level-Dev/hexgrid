@@ -126,12 +126,13 @@ export class GameService {
     }
 
     const now = new Date();
-    const { phaseStartedAt, phaseEndsAt } = this.getUtcPhaseWindow(now, 'open');
+    const startingPhase = this.getExpectedUtcPhase(now);
+    const { phaseStartedAt, phaseEndsAt } = this.getUtcPhaseWindow(now, startingPhase);
 
     const game: GameRecord = {
       id: gameId,
       currentDay: 1,
-      phase: 'open',
+      phase: startingPhase,
       phaseStartedAt: phaseStartedAt.toISOString(),
       phaseEndsAt: phaseEndsAt.toISOString(),
       locked: false,
@@ -211,6 +212,17 @@ export class GameService {
     const phaseExpired = now.getTime() >= new Date(game.phaseEndsAt).getTime();
     const expectedUtcPhase = this.getExpectedUtcPhase(now);
 
+    // Repair a stale open-phase window (e.g. legacy games started with a past
+    // 20:00 end time) instead of prematurely resolving the round.
+    if (game.phase === 'open' && expectedUtcPhase === 'open' && phaseExpired) {
+      const { phaseStartedAt, phaseEndsAt } = this.getUtcPhaseWindow(now, 'open');
+      game.phaseStartedAt = phaseStartedAt.toISOString();
+      game.phaseEndsAt = phaseEndsAt.toISOString();
+      db.updateGame(game);
+      this.log('info', `Repaired OPEN phase window for game ${game.id} (ends ${game.phaseEndsAt}).`);
+      return;
+    }
+
     // If current phase has expired by timestamp OR scheduled UTC window transitioned:
     if (game.phase === 'open' && (phaseExpired || expectedUtcPhase === 'closed')) {
       this.log('info', `Open phase expired. Transitioning to closed phase and processing round ${game.currentDay}...`);
@@ -249,11 +261,7 @@ export class GameService {
 
     if (game.currentDay === 0 || game.endReason === 'waiting_to_start') {
       const newGame = this.startNewGame();
-      newGame.phase = 'open';
-      newGame.phaseStartedAt = now.toISOString();
-      newGame.phaseEndsAt = new Date(now.getTime() + 20 * 60 * 60 * 1000).toISOString();
-      db.updateGame(newGame);
-      this.log('info', `Admin jumped phase: Staged game launched on Day 1 OPEN with 20h timer.`);
+      this.log('info', `Admin jumped phase: Staged game launched on Day 1 ${newGame.phase.toUpperCase()} following the UTC schedule.`);
       return { success: true, game: newGame };
     }
 

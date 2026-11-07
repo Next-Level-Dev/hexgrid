@@ -436,7 +436,62 @@ function runTestSuite() {
     console.log('  Passed: Blocked movement kept player at origin and cancelled out-of-range attack.');
   }
 
-  console.log('\nAll Game Engine tests passed successfully! [10/10]');
+  // Test 11: Bank Claim From Projected (Ghost) Range
+  console.log('\nTest 11: Bank Claim From Projected Range');
+  {
+    const baseState: GameStateData = {
+      prioritySeed: 12345,
+      playerPriorityOrder: ['p1'],
+      players: {
+        p1: { id: 'p1', username: 'P1', avatarUrl: '', health: 3, points: 3, x: 5, y: 5, isAlive: true, peaceVote: 'no' },
+      },
+      buildings: [
+        { id: 'bank-1', type: 'bank', ownerId: 'p1', x: 8, y: 5, health: 1, value: 2 },
+      ],
+    };
+
+    // Move right first (5,5 -> 6,5), then claim the bank at (8,5).
+    // The bank is out of range from (5,5) but in range from the projected (6,5).
+    const actions: ActionSubmission[] = [
+      {
+        id: 'a-move',
+        gameId: 'g1',
+        day: 1,
+        playerId: 'p1',
+        priorityGroup: 4,
+        data: { actionType: 'move', direction: 'right', orderIndex: 1 },
+      },
+      {
+        id: 'a-claim',
+        gameId: 'g1',
+        day: 1,
+        playerId: 'p1',
+        priorityGroup: 3,
+        data: { actionType: 'claim_bank', buildingId: 'bank-1', orderIndex: 0 },
+      },
+    ];
+
+    const result = GameEngine.resolveRound(baseState, actions, 4321);
+    assert.strictEqual(result.nextStateData.players['p1'].x, 6, 'Player should have moved right');
+    assert.strictEqual(result.nextStateData.buildings.length, 0, 'Bank should be claimed from projected range');
+    assert(
+      result.events.some((e) => e.type === 'bank_claimed'),
+      'Bank claim should have executed'
+    );
+
+    // Same setup but the bank is too far even from the projected position.
+    const farState: GameStateData = JSON.parse(JSON.stringify(baseState));
+    farState.buildings[0].x = 9;
+    const farResult = GameEngine.resolveRound(farState, actions, 4321);
+    assert.strictEqual(farResult.nextStateData.buildings.length, 1, 'Out-of-range bank must not be claimed');
+    assert(
+      farResult.events.some((e) => e.type === 'cancelled'),
+      'Out-of-range bank claim should be cancelled'
+    );
+    console.log('  Passed: Claim uses projected range and rejects truly out-of-range banks.');
+  }
+
+  console.log('\nAll Game Engine tests passed successfully! [11/11]');
 }
 
 runTestSuite();

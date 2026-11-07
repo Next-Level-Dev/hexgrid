@@ -1,11 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Move,
   Sword,
   Heart,
   Hammer,
   Send,
-  Landmark,
   Rocket,
   Trash2,
   AlertCircle,
@@ -20,7 +19,14 @@ import {
   Footprints,
 } from 'lucide-react';
 import { ActionData, ActionType, BuildingType, Player, Building } from '../types/game';
-import { GAME_RULES, getActionPriorityGroup, getFixedActionCost } from '../game/rules';
+import { getActionPriorityGroup, getFixedActionCost } from '../game/rules';
+
+export interface ActionConfig {
+  amount: number;
+  allowPartial: boolean;
+  buildingType: BuildingType;
+  targetPlayerId: string;
+}
 
 interface ActionPlannerProps {
   player: Player | null;
@@ -28,6 +34,8 @@ interface ActionPlannerProps {
   buildings: Building[];
   selectedTile: { x: number; y: number } | null;
   actions: ActionData[];
+  actionConfig: ActionConfig;
+  onActionConfigChange: (patch: Partial<ActionConfig>) => void;
   onAddAction: (action: ActionData) => void;
   onRemoveAction: (index: number) => void;
   onSubmitActions: () => void;
@@ -39,12 +47,36 @@ interface ActionPlannerProps {
   ghostPosition?: { x: number; y: number } | null;
 }
 
+const ACTION_TABS: Array<{
+  id: ActionType;
+  label: string;
+  icon: React.ElementType;
+  cost: string;
+  group: number;
+}> = [
+  { id: 'send_points', label: 'Transfer', icon: Send, cost: 'Var', group: 1 },
+  { id: 'heal', label: 'Heal', icon: Heart, cost: 'Var', group: 2 },
+  { id: 'build', label: 'Build', icon: Hammer, cost: '1-2', group: 3 },
+  { id: 'move', label: 'Move', icon: Move, cost: '1 pt', group: 4 },
+  { id: 'attack', label: 'Attack', icon: Sword, cost: 'Var', group: 5 },
+];
+
+const GROUP_LABELS: Record<number, string> = {
+  1: 'TRANSFER',
+  2: 'HEAL',
+  3: 'BUILD',
+  4: 'MOVE',
+  5: 'ATTACK',
+};
+
 export const ActionPlanner: React.FC<ActionPlannerProps> = ({
   player,
   allPlayers,
   buildings,
   selectedTile,
   actions,
+  actionConfig,
+  onActionConfigChange,
   onAddAction,
   onRemoveAction,
   onSubmitActions,
@@ -57,12 +89,20 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
 }) => {
   const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<ActionType>('move');
-  const [amount, setAmount] = useState<number>(1);
-  const [allowPartial, setAllowPartial] = useState<boolean>(true);
-  const [buildingType, setBuildingType] = useState<BuildingType>('outpost');
-  const [targetPlayerId, setTargetPlayerId] = useState<string>('');
+
+  useEffect(() => {
+    if (
+      selectedActionType &&
+      selectedActionType !== 'claim_bank' &&
+      selectedActionType !== 'launch_nuke'
+    ) {
+      setActiveTab(selectedActionType);
+    }
+  }, [selectedActionType]);
 
   if (!player) return null;
+
+  const { amount, allowPartial, buildingType, targetPlayerId } = actionConfig;
 
   // Calculate planned points spent
   let totalCost = 0;
@@ -79,30 +119,44 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
   const isOverBudget = remainingPoints < 0;
 
   // Living targets
-  const livingTargets = allPlayers.filter(
-    (p) => p.isAlive && p.id !== player.id
-  );
+  const livingTargets = allPlayers.filter((p) => p.isAlive && p.id !== player.id);
 
   // Owned assets
-  const ownedBanks = buildings.filter(
-    (b) => b.type === 'bank' && b.ownerId === player.id && !b.isSpent
-  );
   const ownedArmedSilos = buildings.filter(
     (b) => b.type === 'silo' && b.ownerId === player.id && b.isArmed && !b.isSpent
   );
 
+  // Planned actions are always displayed in resolution-priority order, regardless
+  // of the order in which they were queued. Keep the original index for deletion.
+  const sortedActions = actions
+    .map((act, originalIndex) => ({ act, originalIndex }))
+    .sort((a, b) => {
+      const groupDiff =
+        getActionPriorityGroup(a.act.actionType) - getActionPriorityGroup(b.act.actionType);
+      return groupDiff !== 0 ? groupDiff : a.originalIndex - b.originalIndex;
+    });
+
   const handleQueueAction = (actType: ActionType, extra: Partial<ActionData> = {}) => {
     onAddAction({
       actionType: actType,
-      amount: actType === 'attack' || actType === 'send_points' || actType === 'heal' ? amount : undefined,
-      allowPartial: actType === 'attack' || actType === 'send_points' || actType === 'heal' ? allowPartial : undefined,
+      amount:
+        actType === 'attack' || actType === 'send_points' || actType === 'heal'
+          ? amount
+          : undefined,
+      allowPartial:
+        actType === 'attack' || actType === 'send_points' || actType === 'heal'
+          ? allowPartial
+          : undefined,
       buildingType: actType === 'build' ? buildingType : undefined,
       x: selectedTile?.x,
       y: selectedTile?.y,
-      targetPlayerId: actType === 'send_points' ? (targetPlayerId || livingTargets[0]?.id) : undefined,
+      targetPlayerId:
+        actType === 'send_points' ? targetPlayerId || livingTargets[0]?.id : undefined,
       ...extra,
     });
   };
+
+  const isNukeTargeting = selectedActionType === 'launch_nuke';
 
   return (
     <div className="bg-zinc-950/90 backdrop-blur-md border border-zinc-800 rounded-2xl shadow-2xl flex flex-col transition-all overflow-hidden max-w-lg w-full">
@@ -168,16 +222,9 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
             </div>
           )}
 
-          {/* Action Tabs */}
-          <div className="grid grid-cols-6 gap-1 bg-zinc-950 p-1 rounded-xl border border-zinc-800">
-            {[
-              { id: 'move', label: 'Move', icon: Move, cost: '1 pt' },
-              { id: 'attack', label: 'Attack', icon: Sword, cost: 'Var' },
-              { id: 'heal', label: 'Heal', icon: Heart, cost: 'Var' },
-              { id: 'build', label: 'Build', icon: Hammer, cost: '1-2' },
-              { id: 'send_points', label: 'Transfer', icon: Send, cost: 'Var' },
-              { id: 'claim_bank', label: 'Bank', icon: Landmark, cost: '1 pt' },
-            ].map((tab) => {
+          {/* Action Tabs — ordered by resolution priority group */}
+          <div className="grid grid-cols-5 gap-1 bg-zinc-950 p-1 rounded-xl border border-zinc-800">
+            {ACTION_TABS.map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
               return (
@@ -185,15 +232,18 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                   key={tab.id}
                   disabled={isClosed || !player.isAlive}
                   onClick={() => {
-                    setActiveTab(tab.id as ActionType);
-                    onSelectActionType(tab.id as ActionType);
+                    setActiveTab(tab.id);
+                    onSelectActionType(tab.id);
                   }}
-                  className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-lg text-[10px] font-semibold transition-all ${
+                  className={`relative flex flex-col items-center justify-center py-1.5 px-1 rounded-lg text-[10px] font-semibold transition-all ${
                     isActive
                       ? 'bg-amber-500 text-zinc-950 shadow-md font-bold'
                       : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/70'
                   } disabled:opacity-40 disabled:cursor-not-allowed`}
                 >
+                  <span className="absolute top-0.5 left-1 text-[8px] font-mono opacity-70">
+                    P{tab.group}
+                  </span>
                   <Icon className="w-3.5 h-3.5 mb-0.5" />
                   <span>{tab.label}</span>
                 </button>
@@ -207,7 +257,9 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
             {activeTab === 'move' && (
               <div className="flex items-center justify-between gap-2">
                 <div className="text-[11px] text-zinc-300">
-                  <span className="font-semibold text-white">Movement (1 pt):</span> Moves 1 tile. Updates your ghost position for chained actions.
+                  <span className="font-semibold text-white">Movement (1 pt):</span> Moves 1 tile.
+                  Click an adjacent highlighted tile or use the D-pad. Your ghost updates after
+                  every queued move.
                 </div>
                 {/* D-Pad */}
                 <div className="grid grid-cols-3 gap-1 w-28 shrink-0">
@@ -258,7 +310,12 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
             {activeTab === 'attack' && (
               <div className="flex flex-col gap-2">
                 <div className="text-[11px] text-zinc-300">
-                  <span className="font-semibold text-white">Strike:</span> 21-tile circle range radiating from {ghostPosition ? 'your ghost position' : 'operative'}. 1 pt = 1 damage. (If movement is blocked and strike falls out of range, strike is cancelled).
+                  <span className="font-semibold text-white">
+                    {isNukeTargeting ? 'Nuclear Strike:' : 'Strike:'}
+                  </span>{' '}
+                  {isNukeTargeting
+                    ? 'Click ANY tile to launch a 3×3 nuclear blast from an armed silo.'
+                    : 'Click a highlighted tile to strike. 1 pt = 1 damage. Current range is blue; projected range after moves is purple.'}
                 </div>
                 <div className="grid grid-cols-2 gap-2 items-center">
                   <div>
@@ -268,34 +325,47 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                     </div>
                   </div>
                   <div>
-                    <label className="text-[10px] text-zinc-400 block mb-0.5">Points ({amount}):</label>
+                    <label className="text-[10px] text-zinc-400 block mb-0.5">
+                      Points ({amount}):
+                    </label>
                     <input
                       type="range"
                       min="1"
                       max={Math.max(1, player.points)}
                       value={amount}
-                      onChange={(e) => setAmount(parseInt(e.target.value, 10))}
+                      onChange={(e) =>
+                        onActionConfigChange({ amount: parseInt(e.target.value, 10) })
+                      }
                       className="w-full accent-amber-500"
                     />
                   </div>
                 </div>
-                <div className="flex items-center justify-between pt-1">
+                <div className="flex items-center justify-between gap-2 pt-1">
                   <label className="flex items-center gap-1.5 text-[11px] text-zinc-300 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={allowPartial}
-                      onChange={(e) => setAllowPartial(e.target.checked)}
+                      onChange={(e) => onActionConfigChange({ allowPartial: e.target.checked })}
                       className="accent-amber-500"
                     />
                     <span>Allow partial execution</span>
                   </label>
-                  <button
-                    disabled={!selectedTile || isClosed || !player.isAlive}
-                    onClick={() => handleQueueAction('attack')}
-                    className="px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded text-xs font-bold disabled:opacity-40"
-                  >
-                    Queue Strike ({amount} pts)
-                  </button>
+                  {ownedArmedSilos.length > 0 && (
+                    <button
+                      disabled={isClosed || !player.isAlive}
+                      onClick={() =>
+                        onSelectActionType(isNukeTargeting ? 'attack' : 'launch_nuke')
+                      }
+                      className={`px-2.5 py-1 rounded text-[11px] font-bold flex items-center gap-1 border transition-all ${
+                        isNukeTargeting
+                          ? 'bg-red-700 text-white border-red-400 shadow-lg shadow-red-900/40'
+                          : 'bg-zinc-950 text-red-300 border-red-800/70 hover:bg-red-950/50'
+                      }`}
+                    >
+                      <Rocket className="w-3.5 h-3.5" />
+                      {isNukeTargeting ? 'Nuclear Targeting ON' : 'Enable Nuclear Targeting'}
+                    </button>
+                  )}
                 </div>
               </div>
             )}
@@ -304,7 +374,8 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
             {activeTab === 'heal' && (
               <div className="flex items-center justify-between gap-2">
                 <div className="text-[11px] text-zinc-300">
-                  <span className="font-semibold text-white">Heal:</span> 1 pt = +1 HP (max 3). Current HP: {player.health}/3.
+                  <span className="font-semibold text-white">Heal:</span> 1 pt = +1 HP (max 3).
+                  Current HP: {player.health}/3.
                 </div>
                 <div className="flex items-center gap-2">
                   <input
@@ -312,7 +383,11 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                     min="1"
                     max="3"
                     value={amount}
-                    onChange={(e) => setAmount(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                    onChange={(e) =>
+                      onActionConfigChange({
+                        amount: Math.max(1, parseInt(e.target.value, 10) || 1),
+                      })
+                    }
                     className="w-12 bg-zinc-950 border border-zinc-700 rounded px-1.5 py-1 text-xs text-white text-center font-mono"
                   />
                   <button
@@ -330,7 +405,8 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
             {activeTab === 'build' && (
               <div className="flex flex-col gap-2">
                 <div className="text-[11px] text-zinc-300">
-                  <span className="font-semibold text-white">Build:</span> 21-tile circle reach. Select structure and coordinate.
+                  <span className="font-semibold text-white">Build:</span> Click a highlighted tile
+                  to build. Click your own bank to claim it as a building action.
                 </div>
                 <div className="grid grid-cols-4 gap-1.5">
                   {[
@@ -341,7 +417,7 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                   ].map((b) => (
                     <button
                       key={b.type}
-                      onClick={() => setBuildingType(b.type as BuildingType)}
+                      onClick={() => onActionConfigChange({ buildingType: b.type as BuildingType })}
                       className={`p-1.5 rounded border text-center text-[10px] font-bold ${
                         buildingType === b.type
                           ? 'bg-amber-500/20 border-amber-500 text-white'
@@ -356,13 +432,9 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                   <span className="text-[10px] font-mono text-zinc-400">
                     Target: {selectedTile ? `(${selectedTile.x}, ${selectedTile.y})` : 'Select tile'}
                   </span>
-                  <button
-                    disabled={!selectedTile || isClosed || !player.isAlive}
-                    onClick={() => handleQueueAction('build')}
-                    className="px-3 py-1 bg-amber-500 hover:bg-amber-400 text-zinc-950 rounded text-xs font-bold disabled:opacity-40"
-                  >
-                    Queue Build
-                  </button>
+                  <span className="text-[10px] text-cyan-400 font-mono">
+                    {ghostPosition ? 'Blue = current • Purple = projected' : 'Blue = current range'}
+                  </span>
                 </div>
               </div>
             )}
@@ -371,12 +443,13 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
             {activeTab === 'send_points' && (
               <div className="flex flex-col gap-2">
                 <div className="text-[11px] text-zinc-300">
-                  <span className="font-semibold text-white">Transfer Points:</span> 21-tile circle reach. Send points to an ally.
+                  <span className="font-semibold text-white">Transfer Points:</span> Click an ally
+                  in range, or pick a recipient below. 1 pt = 1 transferred point.
                 </div>
                 <div className="flex items-center gap-2">
                   <select
                     value={targetPlayerId}
-                    onChange={(e) => setTargetPlayerId(e.target.value)}
+                    onChange={(e) => onActionConfigChange({ targetPlayerId: e.target.value })}
                     className="bg-zinc-950 border border-zinc-700 text-xs text-white rounded px-2 py-1 flex-1"
                   >
                     <option value="">Select Ally Recipient</option>
@@ -391,39 +464,26 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                     min="1"
                     max={Math.max(1, player.points)}
                     value={amount}
-                    onChange={(e) => setAmount(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                    onChange={(e) =>
+                      onActionConfigChange({
+                        amount: Math.max(1, parseInt(e.target.value, 10) || 1),
+                      })
+                    }
                     className="w-12 bg-zinc-950 border border-zinc-700 rounded px-1 py-1 text-xs text-white text-center font-mono"
                   />
                   <button
-                    disabled={isClosed || !player.isAlive}
+                    disabled={isClosed || !player.isAlive || livingTargets.length === 0}
                     onClick={() => handleQueueAction('send_points')}
                     className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-bold disabled:opacity-40"
                   >
                     Send
                   </button>
                 </div>
-              </div>
-            )}
-
-            {/* BANK & NUKE */}
-            {activeTab === 'claim_bank' && (
-              <div className="flex flex-wrap gap-2">
-                <button
-                  disabled={ownedBanks.length === 0 || isClosed || !player.isAlive}
-                  onClick={() => handleQueueAction('claim_bank')}
-                  className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded text-xs font-bold disabled:opacity-40 flex items-center gap-1"
-                >
-                  <Landmark className="w-3.5 h-3.5" />
-                  Claim Bank ({ownedBanks.length > 0 ? `+${ownedBanks[0].value} pts (1 pt cost)` : 'No bank'})
-                </button>
-                <button
-                  disabled={ownedArmedSilos.length === 0 || !selectedTile || isClosed || !player.isAlive}
-                  onClick={() => handleQueueAction('launch_nuke')}
-                  className="px-3 py-1.5 bg-red-700 hover:bg-red-600 text-white rounded text-xs font-bold disabled:opacity-40 flex items-center gap-1"
-                >
-                  <Rocket className="w-3.5 h-3.5" />
-                  Launch Nuclear Strike (Cost 1 pt, Unlimited Range, Priority 5)
-                </button>
+                <div className="text-[10px] text-cyan-400 font-mono">
+                  {ghostPosition
+                    ? 'Blue = current range • Purple = projected range after moves'
+                    : 'Blue = current range'}
+                </div>
               </div>
             )}
           </div>
@@ -441,49 +501,69 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
 
             {actions.length === 0 ? (
               <div className="text-center py-4 text-zinc-500 text-[11px] border border-dashed border-zinc-800 rounded-lg">
-                No planned actions yet. Click controls above or map tiles.
+                No planned actions yet. Click highlighted map tiles or use the controls above.
               </div>
             ) : (
               <div className="flex flex-col gap-1 max-h-36 overflow-y-auto scrollbar-thin">
-                {actions.map((act, index) => {
+                {sortedActions.map(({ act, originalIndex }, idx) => {
                   const pGroup = getActionPriorityGroup(act.actionType);
                   const fixed = getFixedActionCost(act.actionType, act.buildingType);
                   const cost = fixed !== null ? fixed : act.amount || 1;
+                  const prevGroup =
+                    idx > 0
+                      ? getActionPriorityGroup(sortedActions[idx - 1].act.actionType)
+                      : null;
+                  const showGroupHeader = prevGroup !== pGroup;
+                  const targetName = act.targetPlayerId
+                    ? allPlayers.find((p) => p.id === act.targetPlayerId)?.username
+                    : null;
 
                   return (
-                    <div
-                      key={index}
-                      className="flex items-center justify-between bg-zinc-900 px-2.5 py-1.5 rounded-lg border border-zinc-800 text-xs"
-                    >
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[9px] font-mono px-1 rounded font-bold uppercase bg-zinc-800 text-amber-400">
-                          P{pGroup}
-                        </span>
-                        <span className="font-semibold text-zinc-200">
-                          {act.actionType.toUpperCase().replace(/_/g, ' ')}
-                        </span>
-                        {act.direction && (
-                          <span className="text-zinc-400 font-mono">({act.direction})</span>
-                        )}
-                        {act.buildingType && (
-                          <span className="text-zinc-400">[{act.buildingType}]</span>
-                        )}
-                        {act.x !== undefined && (
-                          <span className="text-zinc-400 font-mono">({act.x}, {act.y})</span>
-                        )}
-                      </div>
+                    <React.Fragment key={originalIndex}>
+                      {showGroupHeader && (
+                        <div className="flex items-center gap-1.5 pt-1 first:pt-0">
+                          <span className="text-[9px] font-mono font-bold px-1 rounded bg-zinc-800 text-amber-400 border border-zinc-700">
+                            P{pGroup}
+                          </span>
+                          <span className="text-[9px] font-bold tracking-wider text-zinc-400">
+                            {GROUP_LABELS[pGroup]}
+                          </span>
+                          <span className="flex-1 h-px bg-zinc-800" />
+                        </div>
+                      )}
+                      <div className="flex items-center justify-between bg-zinc-900 px-2.5 py-1.5 rounded-lg border border-zinc-800 text-xs">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="font-semibold text-zinc-200 truncate">
+                            {act.actionType.toUpperCase().replace(/_/g, ' ')}
+                          </span>
+                          {act.direction && (
+                            <span className="text-zinc-400 font-mono">({act.direction})</span>
+                          )}
+                          {act.buildingType && (
+                            <span className="text-zinc-400">[{act.buildingType}]</span>
+                          )}
+                          {targetName && (
+                            <span className="text-blue-300 truncate">→ {targetName}</span>
+                          )}
+                          {act.x !== undefined && (
+                            <span className="text-zinc-400 font-mono">
+                              ({act.x}, {act.y})
+                            </span>
+                          )}
+                        </div>
 
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-zinc-400 text-[11px]">{cost} pt</span>
-                        <button
-                          disabled={isClosed}
-                          onClick={() => onRemoveAction(index)}
-                          className="p-0.5 rounded text-zinc-400 hover:text-red-400"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="font-mono text-zinc-400 text-[11px]">{cost} pt</span>
+                          <button
+                            disabled={isClosed}
+                            onClick={() => onRemoveAction(originalIndex)}
+                            className="p-0.5 rounded text-zinc-400 hover:text-red-400"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
-                    </div>
+                    </React.Fragment>
                   );
                 })}
               </div>
@@ -493,7 +573,7 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
           {/* Submit Action */}
           <div className="flex items-center justify-between border-t border-zinc-800/80 pt-2.5">
             <span className="text-[10px] text-zinc-500">
-              Resolved in order of priority & seed.
+              Resolved by priority group, then round seed.
             </span>
             <button
               onClick={onSubmitActions}
