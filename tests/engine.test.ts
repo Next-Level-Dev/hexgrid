@@ -491,7 +491,119 @@ function runTestSuite() {
     console.log('  Passed: Claim uses projected range and rejects truly out-of-range banks.');
   }
 
-  console.log('\nAll Game Engine tests passed successfully! [11/11]');
+  // Test 12: Custom map size bounds
+  console.log('\nTest 12: Custom Map Size Bounds');
+  {
+    const state: GameStateData = {
+      prioritySeed: 12345,
+      playerPriorityOrder: ['p1'],
+      players: {
+        p1: { id: 'p1', username: 'P1', avatarUrl: '', health: 3, points: 2, x: 10, y: 5, isAlive: true, peaceVote: 'no' },
+      },
+      buildings: [],
+    };
+
+    const actions: ActionSubmission[] = [
+      {
+        id: 'a-move',
+        gameId: 'g1',
+        day: 1,
+        playerId: 'p1',
+        priorityGroup: 4,
+        data: { actionType: 'move', direction: 'right', orderIndex: 0 },
+      },
+      {
+        id: 'a-attack',
+        gameId: 'g1',
+        day: 1,
+        playerId: 'p1',
+        priorityGroup: 5,
+        data: { actionType: 'attack', x: 11, y: 5, amount: 1, orderIndex: 1 },
+      },
+    ];
+
+    const result = GameEngine.resolveRound(state, actions, 2001, 10);
+    assert.strictEqual(result.nextStateData.players['p1'].x, 10, 'Move outside 10x10 map must be cancelled');
+    assert(
+      !result.events.some((e) => e.type === 'move'),
+      'No movement event should be recorded outside the map'
+    );
+    assert(
+      !result.events.some((e) => e.type === 'attack'),
+      'No attack event should be recorded outside the map'
+    );
+    assert.strictEqual(result.nextStateData.players['p1'].points, 3, 'Only the new-round point is gained');
+    console.log('  Passed: Custom map bounds reject out-of-bounds movement and attacks.');
+  }
+
+  // Test 13: Disabled building types reject construction and interactions
+  console.log('\nTest 13: Disabled Building Types');
+  {
+    const state: GameStateData = {
+      prioritySeed: 12345,
+      playerPriorityOrder: ['p1'],
+      players: {
+        p1: { id: 'p1', username: 'P1', avatarUrl: '', health: 3, points: 10, x: 5, y: 5, isAlive: true, peaceVote: 'no' },
+      },
+      buildings: [
+        { id: 'bank-1', type: 'bank', ownerId: 'p1', x: 6, y: 5, health: 1, value: 2 },
+        { id: 'silo-1', type: 'silo', ownerId: 'p1', x: 4, y: 5, health: 1, isArmed: true },
+      ],
+    };
+
+    const actions: ActionSubmission[] = [
+      {
+        id: 'a-build',
+        gameId: 'g1',
+        day: 1,
+        playerId: 'p1',
+        priorityGroup: 3,
+        data: { actionType: 'build', buildingType: 'mine', x: 5, y: 6, orderIndex: 0 },
+      },
+      {
+        id: 'a-claim',
+        gameId: 'g1',
+        day: 1,
+        playerId: 'p1',
+        priorityGroup: 3,
+        data: { actionType: 'claim_bank', buildingId: 'bank-1', orderIndex: 1 },
+      },
+      {
+        id: 'a-nuke',
+        gameId: 'g1',
+        day: 1,
+        playerId: 'p1',
+        priorityGroup: 5,
+        data: { actionType: 'launch_nuke', x: 8, y: 8, orderIndex: 2 },
+      },
+    ];
+
+    const result = GameEngine.resolveRound(
+      state,
+      actions,
+      2002,
+      25,
+      { mine: false, outpost: true, silo: false, bank: false }
+    );
+
+    assert.strictEqual(result.nextStateData.buildings.length, 2, 'Existing buildings remain on the map');
+    assert(
+      result.nextStateData.buildings.some((b) => b.id === 'bank-1'),
+      'Disabled bank must not be claimed'
+    );
+    assert(
+      result.nextStateData.buildings.some((b) => b.id === 'silo-1'),
+      'Disabled silo must not launch'
+    );
+    assert.strictEqual(result.nextStateData.players['p1'].points, 11, 'No points are spent on rejected actions');
+    assert(
+      result.events.filter((e) => e.type === 'cancelled').length >= 3,
+      'Each action involving a disabled building must be cancelled'
+    );
+    console.log('  Passed: Disabled buildings reject construction, claims and launches.');
+  }
+
+  console.log('\nAll Game Engine tests passed successfully! [13/13]');
 }
 
 runTestSuite();

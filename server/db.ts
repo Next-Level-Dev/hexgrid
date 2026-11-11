@@ -4,21 +4,30 @@
  * games, game_states, actions, players, session_cookies, invitations
  */
 import { DatabaseSync } from 'node:sqlite';
+import fs from 'fs';
 import path from 'path';
 import {
   GameRecord,
   GameStateRecord,
   Player,
   ActionSubmission,
-  GameStateData
+  GameStateData,
+  BuildingType
 } from '../src/types/game';
+import {
+  ALL_BUILDING_TYPES,
+  DEFAULT_MAP_SIZE,
+  createDefaultBuildingConfig
+} from '../src/game/rules';
 
-const DB_PATH = path.resolve(process.cwd(), 'hexgrid.db');
+export const DB_DIR = path.resolve(process.cwd(), 'database');
+export const DB_PATH = path.join(DB_DIR, 'hexgrid.db');
 
 class GameDatabase {
   private db: DatabaseSync;
 
   constructor() {
+    fs.mkdirSync(DB_DIR, { recursive: true });
     this.db = new DatabaseSync(DB_PATH);
     this.init();
   }
@@ -37,9 +46,15 @@ class GameDatabase {
         phase_ends_at TEXT NOT NULL,
         locked INTEGER NOT NULL DEFAULT 0,
         end_reason TEXT,
+        map_size INTEGER NOT NULL DEFAULT 25,
+        enabled_buildings TEXT,
         created_at TEXT NOT NULL
       );
     `);
+
+    // Migrate databases created before per-game settings existed
+    this.ensureColumn('games', 'map_size', 'INTEGER NOT NULL DEFAULT 25');
+    this.ensureColumn('games', 'enabled_buildings', 'TEXT');
 
     // Table: game_states
     this.db.exec(`
@@ -103,6 +118,7 @@ class GameDatabase {
         created_at TEXT NOT NULL
       );
     `);
+    this.ensureColumn('invitations', 'player_id', 'TEXT');
 
     // Indexes
     this.db.exec(`
@@ -113,12 +129,55 @@ class GameDatabase {
     `);
   }
 
-  // --- Games ---
+  private ensureColumn(table: string, column: string, definition: string) {
+    const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as any[];
+    if (!columns.some((c) => c.name === column)) {
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
+    }
+  }
 
-  getGame(id: string): GameRecord | null {
-    const stmt = this.db.prepare('SELECT * FROM games WHERE id = ?');
-    const row = stmt.get(id) as any;
-    if (!row) return null;
+  /**
+   * Normalizes the enabled-buildings map for a game.
+   * - Legacy games without a stored map get every current building enabled.
+   * - Buildings added after the game started are stored as disabled.
+   */
+  private normalizeBuildingConfig(raw: string | null): {
+    config: Record<BuildingType, boolean>;
+    changed: boolean;
+  } {
+    if (raw === null || raw === undefined) {
+      return { config: createDefaultBuildingConfig(), changed: true };
+    }
+
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = {};
+    }
+
+    const config = {} as Record<BuildingType, boolean>;
+    let changed = false;
+    for (const type of ALL_BUILDING_TYPES) {
+      if (Object.prototype.hasOwnProperty.call(parsed, type)) {
+        config[type] = parsed[type] === true;
+      } else {
+        // A building that did not exist when the game started is disabled.
+        config[type] = false;
+        changed = true;
+      }
+    }
+
+    return { config, changed };
+  }
+
+  private mapGameRow(row: any): GameRecord {
+    const { config, changed } = this.normalizeBuildingConfig(row.enabled_buildings);
+    if (changed) {
+      const stmt = this.db.prepare('UPDATE games SET enabled_buildings = ? WHERE id = ?');
+      stmt.run(JSON.stringify(config), row.id);
+    }
+
     return {
       id: row.id,
       currentDay: row.current_day,
@@ -127,7 +186,18 @@ class GameDatabase {
       phaseEndsAt: row.phase_ends_at,
       locked: Boolean(row.locked),
       endReason: row.end_reason,
+      mapSize: Number(row.map_size) || DEFAULT_MAP_SIZE,
+      enabledBuildings: config,
     };
+  }
+
+  // --- Games ---
+
+  getGame(id: string): GameRecord | null {
+    const stmt = this.db.prepare('SELECT * FROM games WHERE id = ?');
+    const row = stmt.get(id) as any;
+    if (!row) return null;
+    return this.mapGameRow(row);
   }
 
   getCurrentGame(): GameRecord | null {
@@ -135,21 +205,13 @@ class GameDatabase {
     const stmt = this.db.prepare('SELECT * FROM games ORDER BY created_at DESC LIMIT 1');
     const row = stmt.get() as any;
     if (!row) return null;
-    return {
-      id: row.id,
-      currentDay: row.current_day,
-      phase: row.phase,
-      phaseStartedAt: row.phase_started_at,
-      phaseEndsAt: row.phase_ends_at,
-      locked: Boolean(row.locked),
-      endReason: row.end_reason,
-    };
+    return this.mapGameRow(row);
   }
 
   createGame(game: GameRecord) {
     const stmt = this.db.prepare(`
-      INSERT INTO games (id, current_day, phase, phase_started_at, phase_ends_at, locked, end_reason, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO games (id, current_day, phase, phase_started_at, phase_ends_at, locked, end_reason, map_size, enabled_buildings, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       game.id,
@@ -159,6 +221,8 @@ class GameDatabase {
       game.phaseEndsAt,
       game.locked ? 1 : 0,
       game.endReason || null,
+      game.mapSize,
+      JSON.stringify(game.enabledBuildings),
       new Date().toISOString()
     );
   }
@@ -171,7 +235,9 @@ class GameDatabase {
         phase_started_at = ?,
         phase_ends_at = ?,
         locked = ?,
-        end_reason = ?
+        end_reason = ?,
+        map_size = ?,
+        enabled_buildings = ?
       WHERE id = ?
     `);
     stmt.run(
@@ -181,6 +247,8 @@ class GameDatabase {
       game.phaseEndsAt,
       game.locked ? 1 : 0,
       game.endReason || null,
+      game.mapSize,
+      JSON.stringify(game.enabledBuildings),
       game.id
     );
   }
@@ -209,6 +277,19 @@ class GameDatabase {
       locked: Boolean(row.locked),
       data: JSON.parse(row.data) as GameStateData,
     };
+  }
+
+  getGameStatesUpTo(gameId: string, day: number): GameStateRecord[] {
+    const stmt = this.db.prepare(
+      'SELECT * FROM game_states WHERE game_id = ? AND day <= ? ORDER BY day ASC'
+    );
+    return (stmt.all(gameId, day) as any[]).map((row) => ({
+      id: row.id,
+      gameId: row.game_id,
+      day: row.day,
+      locked: Boolean(row.locked),
+      data: JSON.parse(row.data) as GameStateData,
+    }));
   }
 
   saveGameState(state: GameStateRecord) {
@@ -352,6 +433,15 @@ class GameDatabase {
     };
   }
 
+  /**
+   * Creates a consistent single-file snapshot of the database using VACUUM INTO.
+   */
+  createBackup(destinationPath: string) {
+    fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
+    const normalized = destinationPath.replace(/\\/g, '/').replace(/'/g, "''");
+    this.db.exec(`VACUUM INTO '${normalized}';`);
+  }
+
   // --- Sessions & Auth ---
 
   createSession(id: string, playerId: string, tokenHash: string, expiresAt: string) {
@@ -379,12 +469,19 @@ class GameDatabase {
 
   // --- Invitations ---
 
-  createInvitation(id: string, tokenHash: string, username: string, createdBy: string | null, expiresAt: string) {
+  createInvitation(
+    id: string,
+    tokenHash: string,
+    playerId: string | null,
+    username: string,
+    createdBy: string | null,
+    expiresAt: string
+  ) {
     const stmt = this.db.prepare(`
-      INSERT INTO invitations (id, token_hash, username, created_by, used, expires_at, created_at)
-      VALUES (?, ?, ?, ?, 0, ?, ?)
+      INSERT INTO invitations (id, token_hash, player_id, username, created_by, used, expires_at, created_at)
+      VALUES (?, ?, ?, ?, ?, 0, ?, ?)
     `);
-    stmt.run(id, tokenHash, username, createdBy, expiresAt, new Date().toISOString());
+    stmt.run(id, tokenHash, playerId, username, createdBy, expiresAt, new Date().toISOString());
   }
 
   getInvitationByHash(tokenHash: string) {
@@ -395,6 +492,18 @@ class GameDatabase {
   markInvitationUsed(id: string) {
     const stmt = this.db.prepare('UPDATE invitations SET used = 1 WHERE id = ?');
     stmt.run(id);
+  }
+
+  /**
+   * Invalidates legacy (pre player_id) invitations for a username. Used to
+   * retire admin invite links that were created before admin links became
+   * console-only.
+   */
+  invalidateLegacyInvitationsForUsername(username: string) {
+    const stmt = this.db.prepare(
+      'UPDATE invitations SET used = 1 WHERE used = 0 AND player_id IS NULL AND lower(username) = lower(?)'
+    );
+    stmt.run(username);
   }
 }
 

@@ -1,6 +1,5 @@
 {
   "name": "HexGrid Tactics: Turn-Based Multiplayer Strategy",
-  "description": "A 25x25 turn-based multiplayer tactical grid game with daily open/closed phases, deterministic priority resolution, animated round progressions, and secret mine warfare.",
+  "description": "A turn-based multiplayer tactical grid game with configurable map sizes, daily open/closed phases, deterministic priority resolution, animated round progressions, and secret mine warfare.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

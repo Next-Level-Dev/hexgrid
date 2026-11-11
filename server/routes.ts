@@ -15,12 +15,123 @@ import {
   generateSecureToken,
   hashToken,
 } from './auth';
-import { ActionSubmission, Building, Player } from '../src/types/game';
-import { getActionPriorityGroup, generateSafeSpawnPosition } from '../src/game/rules';
+import {
+  ActionSubmission,
+  Building,
+  Player,
+  BuildingType,
+  GameEngineEvent,
+  GameStateData,
+} from '../src/types/game';
+import {
+  ALL_BUILDING_TYPES,
+  DEFAULT_MAP_SIZE,
+  isValidMapSize,
+  getActionPriorityGroup,
+  generateSafeSpawnPosition,
+} from '../src/game/rules';
 
 export const apiRouter = Router();
 
 apiRouter.use(authenticatePlayer);
+
+/**
+ * The day currently being calculated during the closed phase must stay sealed.
+ * Only the previous day (and earlier) is visible until the open phase begins.
+ */
+function getHighestVisibleDay(game: { currentDay: number; phase: string }): number {
+  if (!game || game.currentDay <= 0) return 0;
+  if (game.phase === 'closed') return Math.max(1, game.currentDay - 1);
+  return game.currentDay;
+}
+
+function findPlayerByUsername(username: string, excludeId?: string): Player | undefined {
+  const normalized = username.trim().toLowerCase();
+  return db
+    .getAllPlayers()
+    .find((p) => p.id !== excludeId && p.username.trim().toLowerCase() === normalized);
+}
+
+/**
+ * Mines are private: reconstruct their owners from every state up to the
+ * requested day so triggered/destroyed mines can still be attributed even
+ * though they have been removed from the final building list.
+ */
+function buildMineOwnerMap(gameId: string, upToDay: number): Map<string, string> {
+  const owners = new Map<string, string>();
+  for (const record of db.getGameStatesUpTo(gameId, upToDay)) {
+    for (const building of record.data.buildings) {
+      if (building.type === 'mine' && !owners.has(building.id)) {
+        owners.set(building.id, building.ownerId);
+      }
+    }
+    for (const event of record.data.events ?? []) {
+      if (
+        event.type === 'build' &&
+        event.buildingType === 'mine' &&
+        event.buildingId &&
+        event.playerId
+      ) {
+        owners.set(event.buildingId, event.playerId);
+      }
+    }
+  }
+  return owners;
+}
+
+/**
+ * Removes every trace of mines the viewer does not own, including coordinates
+ * and coordinate-bearing descriptions embedded in replay events.
+ */
+function sanitizeStateForViewer(
+  data: GameStateData,
+  viewerId: string | undefined,
+  mineOwners: Map<string, string>
+): GameStateData {
+  const buildings = data.buildings.filter(
+    (building) => building.type !== 'mine' || building.ownerId === viewerId
+  );
+
+  const events = data.events
+    ?.map((event): GameEngineEvent | null => {
+      const isMineEvent =
+        event.type === 'mine_triggered' ||
+        (event.buildingType === 'mine' &&
+          (event.type === 'build' || event.type === 'building_destroyed'));
+      if (!isMineEvent) return event;
+
+      const ownerId =
+        event.type === 'build'
+          ? event.playerId
+          : event.buildingId
+            ? mineOwners.get(event.buildingId)
+            : undefined;
+
+      if (ownerId && viewerId && ownerId === viewerId) return event;
+
+      // Omit destroyed-mine events entirely: even without coordinates, they
+      // could be correlated with the public attack/nuke target that caused
+      // the destruction, revealing where the mine was.
+      if (event.type === 'building_destroyed') return null;
+
+      const redacted: GameEngineEvent = { ...event };
+      delete redacted.fromX;
+      delete redacted.fromY;
+      delete redacted.toX;
+      delete redacted.toY;
+
+      if (event.type === 'mine_triggered') {
+        redacted.description = `A hidden mine detonated! -${event.damage ?? 0} HP`;
+      } else if (event.type === 'build') {
+        redacted.description = 'A hidden mine was constructed.';
+      }
+
+      return redacted;
+    })
+    .filter((event): event is GameEngineEvent => event !== null);
+
+  return { ...data, buildings, events };
+}
 
 // --- User & Session Info ---
 
@@ -56,16 +167,20 @@ apiRouter.post('/auth/redeem-invite', (req: AuthenticatedRequest, res: Response)
   // Mark invitation used
   db.markInvitationUsed(invite.id);
 
-  // Look for player with this username or create new player
-  let player = db.getAllPlayers().find((p) => p.username === invite.username);
+  // Prefer the exact player the invitation was issued for. Older invitations
+  // only stored a username, so fall back to that.
+  let player = invite.player_id
+    ? db.getPlayer(invite.player_id) ?? undefined
+    : findPlayerByUsername(invite.username);
   if (!player) {
     const existing = db.getAllPlayers().map((p) => ({ x: p.x, y: p.y }));
-    const safePos = generateSafeSpawnPosition(existing);
+    const mapSize = db.getCurrentGame()?.mapSize ?? DEFAULT_MAP_SIZE;
+    const safePos = generateSafeSpawnPosition(existing, mapSize);
 
     player = {
       id: uuidv4(),
       username: invite.username,
-      avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(invite.username)}`,
+      avatarUrl: `https://api.dicebear.com/10.x/initial-face/svg?seed=${encodeURIComponent(invite.username)}`,
       health: 3,
       points: 1,
       x: safePos.x,
@@ -87,7 +202,14 @@ apiRouter.post('/auth/redeem-invite', (req: AuthenticatedRequest, res: Response)
 apiRouter.patch('/players/profile', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   const player = req.player!;
   const { username, avatarUrl } = req.body;
-  if (username && username.trim()) player.username = username.trim();
+  if (username && username.trim()) {
+    const trimmed = username.trim();
+    if (findPlayerByUsername(trimmed, player.id)) {
+      res.status(409).json({ error: 'That username is already taken' });
+      return;
+    }
+    player.username = trimmed;
+  }
   if (avatarUrl && avatarUrl.trim()) player.avatarUrl = avatarUrl.trim();
 
   db.savePlayer(player);
@@ -171,35 +293,32 @@ apiRouter.get('/game/state/:day', (req: AuthenticatedRequest, res: Response) => 
     return;
   }
 
+  const highestVisibleDay = getHighestVisibleDay(game);
+  if (requestedDay > highestVisibleDay) {
+    res.status(403).json({
+      error:
+        game.phase === 'closed'
+          ? `Day ${requestedDay} is sealed while the closed phase is calculating`
+          : `Day ${requestedDay} has not been reached yet`,
+    });
+    return;
+  }
+
   const stateRecord = db.getGameState(game.id, requestedDay);
   if (!stateRecord) {
     res.status(404).json({ error: `State for Day ${requestedDay} not found` });
     return;
   }
 
-  // Filter hidden mines based on viewer identity and game status
-  // Mines are only visible to their owner, UNLESS the game is over (then shown transparently)
-  const isGameOver = game.phase === 'over';
+  // Mines are only ever visible to their owner, regardless of game phase.
   const viewerId = req.player?.id;
-
-  const filteredBuildings = stateRecord.data.buildings.filter((b) => {
-    if (b.type !== 'mine') return true;
-    if (isGameOver) return true;
-    return b.ownerId === viewerId;
-  }).map((b) => {
-    if (b.type === 'mine' && isGameOver && b.ownerId !== viewerId) {
-      return { ...b, transparent: true };
-    }
-    return b;
-  });
+  const mineOwners = buildMineOwnerMap(game.id, requestedDay);
+  const sanitizedState = sanitizeStateForViewer(stateRecord.data, viewerId, mineOwners);
 
   res.json({
     day: stateRecord.day,
     gameId: stateRecord.gameId,
-    state: {
-      ...stateRecord.data,
-      buildings: filteredBuildings,
-    },
+    state: sanitizedState,
   });
 });
 
@@ -212,7 +331,19 @@ apiRouter.get('/game/actions', requireAuth, (req: AuthenticatedRequest, res: Res
     return;
   }
 
-  const actions = db.getPlayerActionsForDay(game.id, game.currentDay, req.player!.id);
+  const highestVisibleDay = getHighestVisibleDay(game);
+  const requestedDay =
+    req.query.day !== undefined ? Number(req.query.day) : highestVisibleDay;
+  if (
+    !Number.isInteger(requestedDay) ||
+    requestedDay < 1 ||
+    requestedDay > highestVisibleDay
+  ) {
+    res.status(400).json({ error: 'Invalid or sealed day' });
+    return;
+  }
+
+  const actions = db.getPlayerActionsForDay(game.id, requestedDay, req.player!.id);
   res.json({ actions });
 });
 
@@ -242,6 +373,25 @@ apiRouter.post('/game/actions', requireAuth, (req: AuthenticatedRequest, res: Re
   if (!Array.isArray(rawActions)) {
     res.status(400).json({ error: 'Actions payload must be an array' });
     return;
+  }
+
+  // Reject any action that references a building type disabled for this game.
+  for (const item of rawActions) {
+    const disabledBuildingType: BuildingType | null =
+      item.actionType === 'build'
+        ? (item.buildingType as BuildingType)
+        : item.actionType === 'claim_bank'
+        ? 'bank'
+        : item.actionType === 'launch_nuke'
+        ? 'silo'
+        : null;
+
+    if (disabledBuildingType && !game.enabledBuildings[disabledBuildingType]) {
+      res.status(400).json({
+        error: `${disabledBuildingType} buildings are disabled in this game`,
+      });
+      return;
+    }
   }
 
   const validatedActions: ActionSubmission[] = rawActions.map((item, idx) => {
@@ -327,8 +477,14 @@ apiRouter.post('/game/progress', requireAuth, (req: AuthenticatedRequest, res: R
 
   const { day } = req.body;
   const targetDay = parseInt(day, 10);
-  if (isNaN(targetDay)) {
+  if (isNaN(targetDay) || targetDay < 1) {
     res.status(400).json({ error: 'Invalid day' });
+    return;
+  }
+
+  const highestVisibleDay = getHighestVisibleDay(game);
+  if (targetDay > highestVisibleDay) {
+    res.status(403).json({ error: 'Cannot record progress for a sealed or unreached day' });
     return;
   }
 
@@ -346,9 +502,13 @@ apiRouter.post('/game/progress', requireAuth, (req: AuthenticatedRequest, res: R
 // --- Admin Endpoints ---
 
 apiRouter.post('/admin/players', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
-  const { username, avatarUrl, isAdmin } = req.body;
+  const { username, avatarUrl } = req.body;
   if (!username || !username.trim()) {
     res.status(400).json({ error: 'Username is required' });
+    return;
+  }
+  if (findPlayerByUsername(username)) {
+    res.status(409).json({ error: 'That username is already taken' });
     return;
   }
 
@@ -356,13 +516,13 @@ apiRouter.post('/admin/players', requireAdmin, (req: AuthenticatedRequest, res: 
   const newPlayer: Player = {
     id: playerId,
     username: username.trim(),
-    avatarUrl: avatarUrl?.trim() || `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(username.trim())}`,
+    avatarUrl: avatarUrl?.trim() || `https://api.dicebear.com/10.x/initial-face/svg?seed=${encodeURIComponent(username.trim())}`,
     health: 3,
     points: 1,
     x: 13,
     y: 13,
     isAlive: true,
-    isAdmin: Boolean(isAdmin),
+    isAdmin: false,
     peaceVote: 'no',
     stats: { gamesPlayed: 0, worldPeaces: 0, lastOneStandings: 0, deaths: 0 },
     games: {},
@@ -375,11 +535,19 @@ apiRouter.post('/admin/players', requireAdmin, (req: AuthenticatedRequest, res: 
   });
 });
 
-// Generate one-time authentication / invite link for ANY existing player
+// Generate one-time authentication / invite link for a non-admin player.
+// Admin auth links may only be generated from the server console via
+// `npm run admin:link`.
 apiRouter.post('/admin/players/:id/auth-link', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
   const player = db.getPlayer(req.params.id);
   if (!player) {
     res.status(404).json({ error: 'Player not found' });
+    return;
+  }
+  if (player.isAdmin) {
+    res.status(403).json({
+      error: 'Administrator auth links can only be generated from the server console.',
+    });
     return;
   }
 
@@ -388,7 +556,7 @@ apiRouter.post('/admin/players/:id/auth-link', requireAdmin, (req: Authenticated
   const inviteId = uuidv4();
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(); // 7 days
 
-  db.createInvitation(inviteId, tokenHash, player.username, req.player?.id || null, expiresAt);
+  db.createInvitation(inviteId, tokenHash, player.id, player.username, req.player?.id || null, expiresAt);
 
   res.json({
     success: true,
@@ -409,7 +577,14 @@ apiRouter.patch('/admin/players/:id', requireAdmin, (req: AuthenticatedRequest, 
   }
 
   const { username, avatarUrl } = req.body;
-  if (username && username.trim()) player.username = username.trim();
+  if (username && username.trim()) {
+    const trimmed = username.trim();
+    if (findPlayerByUsername(trimmed, player.id)) {
+      res.status(409).json({ error: 'That username is already taken' });
+      return;
+    }
+    player.username = trimmed;
+  }
   if (avatarUrl && avatarUrl.trim()) player.avatarUrl = avatarUrl.trim();
 
   db.savePlayer(player);
@@ -434,22 +609,56 @@ apiRouter.post('/admin/players/:id/reset-sessions', requireAdmin, (req: Authenti
 });
 
 apiRouter.post('/admin/start-game', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
-  const game = gameService.startNewGame();
+  const { mapSize, enabledBuildings } = req.body || {};
+
+  if (mapSize !== undefined) {
+    const parsedMapSize = Number(mapSize);
+    if (!isValidMapSize(parsedMapSize)) {
+      res.status(400).json({
+        error: 'Map size must be between 10 and 50 in increments of 5',
+      });
+      return;
+    }
+  }
+
+  const buildingOverrides: Partial<Record<BuildingType, boolean>> = {};
+  if (enabledBuildings && typeof enabledBuildings === 'object') {
+    for (const type of ALL_BUILDING_TYPES) {
+      if (typeof enabledBuildings[type] === 'boolean') {
+        buildingOverrides[type] = enabledBuildings[type];
+      }
+    }
+  }
+
+  const game = gameService.startNewGame({
+    mapSize: mapSize !== undefined ? Number(mapSize) : undefined,
+    enabledBuildings: buildingOverrides,
+  });
   res.json({ success: true, game });
 });
 
-apiRouter.post('/admin/advance-round', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
-  const result = gameService.adminAdvanceRound();
-  if (!result.success) {
-    res.status(500).json({ error: result.error });
+apiRouter.patch('/admin/game/buildings', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+  const { buildingType, enabled } = req.body || {};
+
+  if (!ALL_BUILDING_TYPES.includes(buildingType)) {
+    res.status(400).json({ error: 'Unknown building type' });
     return;
   }
-  const game = db.getCurrentGame();
-  res.json({ success: true, game });
+  if (typeof enabled !== 'boolean') {
+    res.status(400).json({ error: 'enabled must be a boolean' });
+    return;
+  }
+
+  const result = gameService.setBuildingEnabled(buildingType as BuildingType, enabled);
+  if (!result.success) {
+    res.status(400).json({ error: result.error });
+    return;
+  }
+  res.json({ success: true, game: result.game });
 });
 
-apiRouter.post('/admin/jump-phase', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
-  const result = gameService.jumpToNextPhase();
+apiRouter.post('/admin/resolve-day', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+  const result = gameService.resolveCurrentDay();
   if (!result.success) {
     res.status(400).json({ error: result.error });
     return;

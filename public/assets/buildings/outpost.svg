@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <!-- Placeholder: OUTPOST building icon (replace this file, keep the filename) -->
+  <path d="M24 4 L40 10 V22 C40 32.5 33 40.5 24 44 C15 40.5 8 32.5 8 22 V10 Z" fill="#3b82f6"/>
+  <path d="M24 9.5 L35 13.8 V22 C35 29.5 30.3 35.5 24 38.8 C17.7 35.5 13 29.5 13 22 V13.8 Z"
+        fill="none" stroke="#93c5fd" stroke-width="2" stroke-linejoin="round" opacity="0.7"/>
+</svg>

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <!-- Placeholder: SILO building icon (replace this file, keep the filename) -->
+  <path d="M24 4 L30.5 15 L17.5 15 Z" fill="#ef4444"/>
+  <rect x="17.5" y="15" width="13" height="17" rx="1.5" fill="#cbd5e1"/>
+  <path d="M17.5 27 L11 38 L17.5 34 Z" fill="#64748b"/>
+  <path d="M30.5 27 L37 38 L30.5 34 Z" fill="#64748b"/>
+  <circle cx="24" cy="21.5" r="2.6" fill="#475569"/>
+</svg>

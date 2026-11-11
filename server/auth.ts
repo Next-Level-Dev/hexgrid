@@ -64,11 +64,6 @@ export function authenticatePlayer(
     req.headers.authorization?.replace(/^Bearer\s+/i, '');
 
   if (!token) {
-    // If no session exists in preview, check if we can fall back to the default admin player
-    const defaultAdmin = db.getPlayer('a0000000-0000-0000-0000-000000000001');
-    if (defaultAdmin) {
-      req.player = defaultAdmin;
-    }
     return next();
   }
 

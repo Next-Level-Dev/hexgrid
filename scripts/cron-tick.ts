@@ -6,12 +6,14 @@
  * Inspects database state:
  * - If current phase is OPEN and window expired:
  *     Transitions to CLOSED, atomically calculates Day N actions into Day N+1,
- *     and sets 4-hour countdown window.
+ *     and sets the closed-phase countdown window.
  * - If current phase is CLOSED and window expired:
- *     Transitions to OPEN and sets 20-hour countdown window.
+ *     Transitions to OPEN and sets the open-phase countdown window.
  */
+import 'dotenv/config';
 import { db } from '../server/db';
 import { gameService } from '../server/gameService';
+import { backupDatabaseIfDue } from '../server/backup';
 
 function log(msg: string) {
   const ts = new Date().toISOString();
@@ -20,6 +22,7 @@ function log(msg: string) {
 
 async function main() {
   log('Starting cron tick check...');
+  backupDatabaseIfDue();
 
   const game = db.getCurrentGame();
   if (!game) {
@@ -40,33 +43,27 @@ async function main() {
   const now = new Date();
   const endsAt = new Date(game.phaseEndsAt);
   const isTimeExpired = now.getTime() >= endsAt.getTime();
-  const expectedUtcPhase = gameService.getExpectedUtcPhase(now);
 
   log(`Current state: Day ${game.currentDay}, Phase: ${game.phase.toUpperCase()}, EndsAt: ${game.phaseEndsAt}`);
-  log(`Time expired: ${isTimeExpired}, Expected UTC Phase: ${expectedUtcPhase.toUpperCase()}`);
+  log(`Time expired: ${isTimeExpired}`);
 
-  if (game.phase === 'open' && (isTimeExpired || expectedUtcPhase === 'closed')) {
+  // Phase transitions follow the stored phaseEndsAt timestamps so manual
+  // admin phase control is never overridden by the wall-clock UTC schedule.
+  if (game.phase === 'open' && isTimeExpired) {
     log(`Open phase has concluded. Transitioning to CLOSED phase and calculating Day ${game.currentDay} actions...`);
     const result = gameService.processRound(game.id, 'closed');
     if (result.success) {
       const updated = db.getCurrentGame();
-      if (updated && updated.phase === 'closed') {
-        const { phaseStartedAt, phaseEndsAt } = gameService.getUtcPhaseWindow(now, 'closed');
-        updated.phaseStartedAt = phaseStartedAt.toISOString();
-        updated.phaseEndsAt = phaseEndsAt.toISOString();
-        db.updateGame(updated);
-        log(`Day ${game.currentDay} actions processed. Now in CLOSED phase for Day ${updated.currentDay} until ${updated.phaseEndsAt}.`);
-      }
+      log(`Day ${game.currentDay} actions processed. Now in CLOSED phase for Day ${updated?.currentDay} until ${updated?.phaseEndsAt}.`);
     } else {
       log(`ERROR: Failed to process round: ${result.error}`);
       process.exit(1);
     }
-  } else if (game.phase === 'closed' && (isTimeExpired || expectedUtcPhase === 'open')) {
+  } else if (game.phase === 'closed' && isTimeExpired) {
     log(`Closed phase has concluded. Transitioning to OPEN phase for Day ${game.currentDay}...`);
-    const { phaseStartedAt, phaseEndsAt } = gameService.getUtcPhaseWindow(now, 'open');
     game.phase = 'open';
-    game.phaseStartedAt = phaseStartedAt.toISOString();
-    game.phaseEndsAt = phaseEndsAt.toISOString();
+    game.phaseStartedAt = now.toISOString();
+    game.phaseEndsAt = gameService.getNextOpenPhaseEnd(now).toISOString();
     db.updateGame(game);
     log(`Game is now OPEN for Day ${game.currentDay} until ${game.phaseEndsAt}.`);
   } else {

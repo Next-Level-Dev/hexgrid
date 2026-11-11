@@ -5,13 +5,13 @@ import {
   Heart,
   Crown,
   Handshake,
-  Settings,
+  ShieldAlert,
   Edit3,
   X,
   Check,
-  FastForward,
 } from 'lucide-react';
 import { Player, GameRecord } from '../types/game';
+import { DEFAULT_MAP_SIZE } from '../game/rules';
 
 interface HeaderProps {
   game: GameRecord | null;
@@ -21,7 +21,6 @@ interface HeaderProps {
   onTogglePeaceVote: () => void;
   onOpenAdmin: () => void;
   onProfileUpdated: () => void;
-  onJumpPhase?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -32,8 +31,8 @@ export const Header: React.FC<HeaderProps> = ({
   onTogglePeaceVote,
   onOpenAdmin,
   onProfileUpdated,
-  onJumpPhase,
 }) => {
+  const mapSize = game?.mapSize ?? DEFAULT_MAP_SIZE;
   const isUnstarted = !game || game.currentDay === 0 || game.endReason === 'waiting_to_start';
   const isHistorical = game && !isUnstarted ? viewingDay < game.currentDay : false;
   const isClosed = game?.phase === 'closed';
@@ -88,57 +87,44 @@ export const Header: React.FC<HeaderProps> = ({
   };
 
   return (
-    <header className="border-b border-zinc-800 bg-zinc-950/90 backdrop-blur sticky top-0 z-40 px-4 py-3">
-      <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-3">
+    <header className="border-b border-zinc-800 bg-zinc-950/95 backdrop-blur sticky top-0 z-40 px-3 md:px-4 py-2 md:py-3">
+      <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-2 md:gap-3">
         {/* Left: Branding & Day Badge */}
-        <div className="flex items-center gap-3 w-full md:w-auto justify-between md:justify-start">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-lg bg-gradient-to-tr from-amber-600 to-rose-600 flex items-center justify-center font-black text-white shadow-lg shadow-amber-500/20">
-              25
+        <div className="flex items-center gap-2 w-full md:w-auto justify-between md:justify-start">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-8 h-8 md:w-9 md:h-9 rounded-lg bg-amber-600 flex items-center justify-center font-black text-white text-sm shrink-0">
+              {mapSize}
             </div>
-            <div>
-              <h1 className="text-base font-bold tracking-tight text-white flex items-center gap-2">
+            <div className="min-w-0">
+              <h1 className="text-sm md:text-base font-bold tracking-tight text-white flex items-center gap-1.5 truncate">
                 HEXGRID TACTICS
-                <span className="text-xs px-2 py-0.5 rounded font-mono bg-zinc-800 text-zinc-300 border border-zinc-700">
+                <span className="text-[10px] md:text-xs px-1.5 py-0.5 rounded font-mono bg-zinc-800 text-zinc-300 border border-zinc-700 shrink-0">
                   {isUnstarted ? 'UNSTARTED' : `DAY ${viewingDay}`}
                   {game && !isUnstarted && viewingDay !== game.currentDay && ` (Live: Day ${game.currentDay})`}
                 </span>
               </h1>
-              <p className="text-xs text-zinc-400">Turn-based 25×25 tactical strategy</p>
+              <p className="hidden md:block text-xs text-zinc-400">Turn-based {mapSize}×{mapSize} tactical strategy</p>
             </div>
-          </div>
-
-          {/* Admin button for mobile */}
-          <div className="flex md:hidden items-center gap-1">
-            {player?.isAdmin && (
-              <button
-                onClick={onOpenAdmin}
-                className="p-2 rounded bg-zinc-800 text-amber-400 hover:bg-zinc-700"
-                title="Admin Control"
-              >
-                <Settings className="w-4 h-4" />
-              </button>
-            )}
           </div>
         </div>
 
         {/* Center: Large Phase & UTC Countdown Timer */}
-        <div className="flex items-center gap-3 bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2 shadow-inner">
+        <div className="w-full md:w-auto flex items-center justify-center gap-2 md:gap-3 bg-zinc-900 border border-zinc-800 rounded-xl px-3 md:px-4 py-1.5 md:py-2">
           <Clock
-            className={`w-5 h-5 ${
+            className={`w-4 h-4 md:w-5 md:h-5 shrink-0 ${
               isUnstarted
                 ? 'text-amber-400'
                 : isClosed
-                ? 'text-amber-400 animate-pulse'
+                ? 'text-amber-400'
                 : isGameOver
                 ? 'text-purple-400'
                 : 'text-emerald-400'
             }`}
           />
-          <div className="text-center">
+          <div className="text-center min-w-0">
             <div className="flex items-center gap-2 justify-center">
               <span
-                className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.2 rounded-full ${
+                className={`text-[9px] md:text-[10px] font-bold uppercase tracking-wider px-2 py-0.2 rounded-full ${
                   isUnstarted
                     ? 'bg-amber-950 text-amber-300 border border-amber-800'
                     : isGameOver
@@ -157,28 +143,28 @@ export const Header: React.FC<HeaderProps> = ({
                   : 'OPEN PHASE (ACTIONS OPEN)'}
               </span>
             </div>
-            <div className="text-2xl font-mono font-extrabold text-white tracking-widest leading-tight">
+            <div className="text-lg md:text-2xl font-mono font-extrabold text-white tracking-widest leading-tight">
               {formatTimer(secondsRemaining)}
             </div>
-            <div className="text-[10px] text-zinc-400 font-mono">
+            <div className="hidden md:block text-[10px] text-zinc-400 font-mono">
               {isUnstarted
                 ? 'Stage operatives before launching Day 1'
-                : 'UTC Daily Cycle (00:00–20:00 Open | 20:00–00:00 Closed)'}
+                : 'UTC Daily Cycle (02:00–24:00 Open | 00:00–02:00 Closed)'}
             </div>
           </div>
         </div>
 
         {/* Right: Player Profile & Admin Controls */}
-        <div className="flex items-center gap-3 w-full md:w-auto justify-end">
+        <div className="flex items-center gap-2 md:gap-3 w-full md:w-auto justify-end">
           {player ? (
-            <div className="flex items-center gap-2 bg-zinc-900/90 border border-zinc-800 rounded-xl p-1.5 pr-3">
+            <div className="flex flex-wrap items-center gap-2 bg-zinc-900/90 border border-zinc-800 rounded-xl p-1.5 md:pr-3">
               {/* Avatar: 1:1 rounded square */}
               <img
                 src={player.avatarUrl}
                 alt={player.username}
-                className="w-9 h-9 rounded-lg bg-zinc-800 object-cover border border-zinc-700"
+                className="w-8 h-8 md:w-9 md:h-9 rounded-lg bg-zinc-800 object-cover border border-zinc-700"
               />
-              <div className="text-left">
+              <div className="text-left min-w-0">
                 <div className="flex items-center gap-1.5">
                   <span className="text-xs font-semibold text-zinc-100 truncate max-w-[110px]">
                     {player.username}
@@ -201,7 +187,7 @@ export const Header: React.FC<HeaderProps> = ({
                       setIsEditingProfile(true);
                     }}
                     title="Change Profile"
-                    className="p-0.5 rounded text-zinc-400 hover:text-white hover:bg-zinc-800"
+                    className="p-1 rounded text-zinc-400 hover:text-white hover:bg-zinc-800"
                   >
                     <Edit3 className="w-3 h-3" />
                   </button>
@@ -232,38 +218,28 @@ export const Header: React.FC<HeaderProps> = ({
                   onClick={onTogglePeaceVote}
                   disabled={isClosed}
                   title="Toggle World Peace Vote"
-                  className={`ml-1 text-xs px-2 py-1 rounded-lg border font-medium flex items-center gap-1 transition-colors ${
+                  className={`text-xs px-2 py-1.5 rounded-lg border font-medium flex items-center gap-1 transition-colors ${
                     player.peaceVote === 'yes'
                       ? 'bg-emerald-950/80 text-emerald-300 border-emerald-600 hover:bg-emerald-900'
                       : 'bg-zinc-800 text-zinc-400 border-zinc-700 hover:text-zinc-200'
                   } ${isClosed ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   <Handshake className="w-3.5 h-3.5" />
-                  {player.peaceVote === 'yes' ? 'Peace: YES' : 'Peace: NO'}
+                  <span className="hidden md:inline">
+                    {player.peaceVote === 'yes' ? 'Peace: YES' : 'Peace: NO'}
+                  </span>
                 </button>
               )}
 
-              {/* Admin Button & Jump Phase */}
+              {/* Admin Console (single icon button, all viewports) */}
               {player.isAdmin && (
-                <>
-                  {onJumpPhase && !isUnstarted && !isGameOver && (
-                    <button
-                      onClick={onJumpPhase}
-                      title={game?.phase === 'open' ? 'Jump to Closed Phase (Processes actions and starts 4h timer)' : 'Jump to Open Phase (Opens day and starts 20h timer)'}
-                      className="hidden lg:flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg bg-indigo-500/15 text-indigo-300 border border-indigo-500/40 hover:bg-indigo-500/25 font-medium ml-1"
-                    >
-                      <FastForward className="w-3.5 h-3.5 fill-indigo-300" />
-                      Jump to {game?.phase === 'open' ? 'Closed (4h)' : 'Open (20h)'}
-                    </button>
-                  )}
-                  <button
-                    onClick={onOpenAdmin}
-                    className="hidden md:flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20 font-medium ml-1"
-                  >
-                    <Settings className="w-3.5 h-3.5" />
-                    Admin
-                  </button>
-                </>
+                <button
+                  onClick={onOpenAdmin}
+                  title="Admin Console"
+                  className="p-2 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20"
+                >
+                  <ShieldAlert className="w-4 h-4" />
+                </button>
               )}
             </div>
           ) : (

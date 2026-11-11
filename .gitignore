@@ -6,3 +6,10 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Runtime database and snapshots
+database/*.db
+database/*.db-shm
+database/*.db-wal
+database/backups/
+nuked_databases/

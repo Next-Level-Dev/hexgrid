@@ -45,6 +45,7 @@ interface ActionPlannerProps {
   isSaving: boolean;
   saveSuccess: boolean;
   ghostPosition?: { x: number; y: number } | null;
+  enabledBuildings: Record<BuildingType, boolean>;
 }
 
 const ACTION_TABS: Array<{
@@ -86,16 +87,18 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
   isSaving,
   saveSuccess,
   ghostPosition,
+  enabledBuildings,
 }) => {
   const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<ActionType>('move');
 
   useEffect(() => {
-    if (
-      selectedActionType &&
-      selectedActionType !== 'claim_bank' &&
-      selectedActionType !== 'launch_nuke'
-    ) {
+    if (!selectedActionType) return;
+    if (selectedActionType === 'launch_nuke') {
+      setActiveTab('attack');
+    } else if (selectedActionType === 'claim_bank') {
+      setActiveTab('build');
+    } else {
       setActiveTab(selectedActionType);
     }
   }, [selectedActionType]);
@@ -159,21 +162,21 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
   const isNukeTargeting = selectedActionType === 'launch_nuke';
 
   return (
-    <div className="bg-zinc-950/90 backdrop-blur-md border border-zinc-800 rounded-2xl shadow-2xl flex flex-col transition-all overflow-hidden max-w-lg w-full">
+    <div className="bg-zinc-950/95 backdrop-blur-md border border-zinc-800 rounded-2xl shadow-xl flex flex-col transition-all overflow-hidden w-full max-w-lg">
       {/* Header & Budget status */}
-      <div className="flex items-center justify-between p-3.5 border-b border-zinc-800/80 bg-zinc-900/60">
-        <div className="flex items-center gap-2">
+      <div className="flex items-center justify-between gap-2 p-3 md:p-3.5 border-b border-zinc-800/80 bg-zinc-900/60">
+        <div className="flex items-center gap-2 min-w-0">
           <button
             onClick={() => setIsCollapsed(!isCollapsed)}
-            className="p-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
+            className="p-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 shrink-0"
             title={isCollapsed ? 'Expand Action Deck' : 'Collapse Action Deck'}
           >
             {isCollapsed ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
           </button>
-          <div>
+          <div className="min-w-0">
             <h3 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
-              <span>ACTION DECK</span>
-              <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-zinc-800 text-amber-400 border border-zinc-700">
+              <span className="truncate">ACTION DECK</span>
+              <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-zinc-800 text-amber-400 border border-zinc-700 shrink-0">
                 {actions.length} Queued
               </span>
             </h3>
@@ -188,7 +191,7 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
 
         {/* Budget Pill */}
         <div
-          className={`px-2.5 py-1 rounded-xl border text-[11px] font-mono font-bold flex items-center gap-1.5 ${
+          className={`px-2.5 py-1 rounded-xl border text-[11px] font-mono font-bold flex items-center gap-1.5 shrink-0 ${
             isOverBudget
               ? 'bg-red-950/80 text-red-300 border-red-700'
               : 'bg-zinc-900 text-zinc-200 border-zinc-700'
@@ -206,13 +209,24 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
         </div>
       </div>
 
+      {/* Over-budget warning (always visible, even when collapsed) */}
+      {isOverBudget && (
+        <div className="bg-red-950/50 border-t border-b border-red-800/60 px-3 py-2 flex items-center gap-2 text-[11px] text-red-300">
+          <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
+          <span>
+            Your points aren't enough for your currently planned actions — you might want to
+            reconsider, unless someone will send you points this round.
+          </span>
+        </div>
+      )}
+
       {/* Expandable Body */}
       {!isCollapsed && (
-        <div className="p-3.5 flex flex-col gap-3 max-h-[460px] overflow-y-auto scrollbar-thin">
+        <div className="p-3 md:p-3.5 flex flex-col gap-3 max-h-[460px] max-md:max-h-[38vh] overflow-y-auto scrollbar-thin">
           {isClosed && (
             <div className="bg-amber-950/40 border border-amber-800/60 rounded-xl p-2.5 flex items-center gap-2 text-xs text-amber-300">
               <ShieldAlert className="w-4 h-4 shrink-0 text-amber-400" />
-              <span>Closed phase active. Changes locked until 00:00 UTC.</span>
+              <span>Closed phase active. Changes locked until 02:00 UTC.</span>
             </div>
           )}
           {!player.isAlive && (
@@ -226,32 +240,36 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
           <div className="grid grid-cols-5 gap-1 bg-zinc-950 p-1 rounded-xl border border-zinc-800">
             {ACTION_TABS.map((tab) => {
               const Icon = tab.icon;
-              const isActive = activeTab === tab.id;
+              const isActive =
+                selectedActionType === tab.id ||
+                (tab.id === 'attack' && selectedActionType === 'launch_nuke');
               return (
                 <button
                   key={tab.id}
                   disabled={isClosed || !player.isAlive}
                   onClick={() => {
-                    setActiveTab(tab.id);
-                    onSelectActionType(tab.id);
+                    const next = selectedActionType === tab.id ? null : tab.id;
+                    if (next) setActiveTab(tab.id);
+                    onSelectActionType(next);
                   }}
-                  className={`relative flex flex-col items-center justify-center py-1.5 px-1 rounded-lg text-[10px] font-semibold transition-all ${
+                  className={`relative flex flex-col items-center justify-center py-2 md:py-1.5 px-1 rounded-lg text-[10px] font-semibold transition-all ${
                     isActive
-                      ? 'bg-amber-500 text-zinc-950 shadow-md font-bold'
+                      ? 'bg-amber-500 text-zinc-950 font-bold'
                       : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/70'
                   } disabled:opacity-40 disabled:cursor-not-allowed`}
                 >
                   <span className="absolute top-0.5 left-1 text-[8px] font-mono opacity-70">
                     P{tab.group}
                   </span>
-                  <Icon className="w-3.5 h-3.5 mb-0.5" />
+                  <Icon className="w-4 h-4 mb-0.5" />
                   <span>{tab.label}</span>
                 </button>
               );
             })}
           </div>
 
-          {/* Form area based on active tab */}
+          {/* Form area based on selected action */}
+          {selectedActionType ? (
           <div className="bg-zinc-900/70 border border-zinc-800/80 rounded-xl p-2.5 flex flex-col gap-2">
             {/* MOVE */}
             {activeTab === 'move' && (
@@ -262,24 +280,24 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                   every queued move.
                 </div>
                 {/* D-Pad */}
-                <div className="grid grid-cols-3 gap-1 w-28 shrink-0">
+                <div className="grid grid-cols-3 gap-1 w-28 md:w-28 shrink-0">
                   <div />
                   <button
                     disabled={isClosed || !player.isAlive}
                     onClick={() => handleQueueAction('move', { direction: 'up' })}
-                    className="p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded flex items-center justify-center text-zinc-200"
+                    className="p-2 md:p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded flex items-center justify-center text-zinc-200 active:bg-zinc-600"
                     title="Move Up"
                   >
-                    <ArrowUp className="w-3.5 h-3.5" />
+                    <ArrowUp className="w-4 h-4 md:w-3.5 md:h-3.5" />
                   </button>
                   <div />
                   <button
                     disabled={isClosed || !player.isAlive}
                     onClick={() => handleQueueAction('move', { direction: 'left' })}
-                    className="p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded flex items-center justify-center text-zinc-200"
+                    className="p-2 md:p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded flex items-center justify-center text-zinc-200 active:bg-zinc-600"
                     title="Move Left"
                   >
-                    <ArrowLeft className="w-3.5 h-3.5" />
+                    <ArrowLeft className="w-4 h-4 md:w-3.5 md:h-3.5" />
                   </button>
                   <div className="flex items-center justify-center text-[9px] font-mono text-zinc-500">
                     1 pt
@@ -287,19 +305,19 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                   <button
                     disabled={isClosed || !player.isAlive}
                     onClick={() => handleQueueAction('move', { direction: 'right' })}
-                    className="p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded flex items-center justify-center text-zinc-200"
+                    className="p-2 md:p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded flex items-center justify-center text-zinc-200 active:bg-zinc-600"
                     title="Move Right"
                   >
-                    <ArrowRight className="w-3.5 h-3.5" />
+                    <ArrowRight className="w-4 h-4 md:w-3.5 md:h-3.5" />
                   </button>
                   <div />
                   <button
                     disabled={isClosed || !player.isAlive}
                     onClick={() => handleQueueAction('move', { direction: 'down' })}
-                    className="p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded flex items-center justify-center text-zinc-200"
+                    className="p-2 md:p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded flex items-center justify-center text-zinc-200 active:bg-zinc-600"
                     title="Move Down"
                   >
-                    <ArrowDown className="w-3.5 h-3.5" />
+                    <ArrowDown className="w-4 h-4 md:w-3.5 md:h-3.5" />
                   </button>
                   <div />
                 </div>
@@ -350,15 +368,15 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                     />
                     <span>Allow partial execution</span>
                   </label>
-                  {ownedArmedSilos.length > 0 && (
+                  {enabledBuildings.silo && ownedArmedSilos.length > 0 && (
                     <button
                       disabled={isClosed || !player.isAlive}
                       onClick={() =>
                         onSelectActionType(isNukeTargeting ? 'attack' : 'launch_nuke')
                       }
-                      className={`px-2.5 py-1 rounded text-[11px] font-bold flex items-center gap-1 border transition-all ${
+                      className={`px-2.5 py-1.5 rounded text-[11px] font-bold flex items-center gap-1 border transition-all ${
                         isNukeTargeting
-                          ? 'bg-red-700 text-white border-red-400 shadow-lg shadow-red-900/40'
+                          ? 'bg-red-700 text-white border-red-400'
                           : 'bg-zinc-950 text-red-300 border-red-800/70 hover:bg-red-950/50'
                       }`}
                     >
@@ -414,19 +432,26 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                     { type: 'outpost', label: 'Outpost (1 pt)' },
                     { type: 'silo', label: 'Nuke Silo (2 pt)' },
                     { type: 'bank', label: 'Bank (1 pt)' },
-                  ].map((b) => (
-                    <button
-                      key={b.type}
-                      onClick={() => onActionConfigChange({ buildingType: b.type as BuildingType })}
-                      className={`p-1.5 rounded border text-center text-[10px] font-bold ${
-                        buildingType === b.type
-                          ? 'bg-amber-500/20 border-amber-500 text-white'
-                          : 'bg-zinc-950 border-zinc-800 text-zinc-400'
-                      }`}
-                    >
-                      {b.label}
-                    </button>
-                  ))}
+                  ].map((b) => {
+                    const isBuildingEnabled = enabledBuildings[b.type as BuildingType];
+                    return (
+                      <button
+                        key={b.type}
+                        disabled={!isBuildingEnabled}
+                        onClick={() =>
+                          onActionConfigChange({ buildingType: b.type as BuildingType })
+                        }
+                        title={isBuildingEnabled ? b.label : `${b.type} is disabled in this game`}
+                        className={`p-1.5 md:py-1.5 rounded border text-center text-[10px] font-bold ${
+                          buildingType === b.type && isBuildingEnabled
+                            ? 'bg-amber-500/20 border-amber-500 text-white'
+                            : 'bg-zinc-950 border-zinc-800 text-zinc-400'
+                        } disabled:opacity-40 disabled:cursor-not-allowed`}
+                      >
+                        {b.label}
+                      </button>
+                    );
+                  })}
                 </div>
                 <div className="flex items-center justify-between pt-1">
                   <span className="text-[10px] font-mono text-zinc-400">
@@ -487,6 +512,11 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
               </div>
             )}
           </div>
+          ) : (
+            <div className="bg-zinc-900/40 border border-dashed border-zinc-800 rounded-xl p-3 text-center text-[11px] text-zinc-500">
+              Select an action above to plan it. Click the selected action again to deselect.
+            </div>
+          )}
 
           {/* Queued Action Items */}
           <div className="flex flex-col gap-1.5">
@@ -557,7 +587,7 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                           <button
                             disabled={isClosed}
                             onClick={() => onRemoveAction(originalIndex)}
-                            className="p-0.5 rounded text-zinc-400 hover:text-red-400"
+                            className="p-1.5 rounded text-zinc-400 hover:text-red-400 active:bg-zinc-800"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -578,7 +608,7 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
             <button
               onClick={onSubmitActions}
               disabled={isClosed || !player.isAlive || isSaving}
-              className="px-4 py-2 bg-gradient-to-r from-amber-500 to-rose-500 hover:from-amber-400 hover:to-rose-400 text-zinc-950 font-bold text-xs uppercase tracking-wider rounded-xl shadow disabled:opacity-40 transition-all"
+              className="min-h-11 px-4 py-2 bg-amber-600 hover:bg-amber-500 text-zinc-950 font-bold text-xs uppercase tracking-wider rounded-xl disabled:opacity-40 transition-all active:scale-[0.98]"
             >
               {isSaving ? 'Submitting...' : 'Confirm Planned Actions'}
             </button>

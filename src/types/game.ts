@@ -1,5 +1,5 @@
 /**
- * Game domain models and types for 25x25 Turn-Based Multiplayer Grid Game
+ * Game domain models and types for the turn-based multiplayer grid game
  */
 
 export type Phase = 'open' | 'closed' | 'over';
@@ -138,6 +138,8 @@ export interface GameRecord {
   phaseEndsAt: string;   // ISO UTC
   locked: boolean;
   endReason?: WinReason;
+  mapSize: number;
+  enabledBuildings: Record<BuildingType, boolean>;
 }
 
 export interface GameStateRecord {

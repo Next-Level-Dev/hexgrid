@@ -14,7 +14,25 @@ import {
   Play,
   Key,
 } from 'lucide-react';
-import { Player, GameRecord } from '../types/game';
+import { Player, GameRecord, BuildingType } from '../types/game';
+import {
+  ALL_BUILDING_TYPES,
+  DEFAULT_MAP_SIZE,
+  MAP_SIZE_OPTIONS,
+  createDefaultBuildingConfig,
+} from '../game/rules';
+
+const BUILDING_LABELS: Record<BuildingType, string> = {
+  mine: 'Mine',
+  outpost: 'Outpost',
+  silo: 'Nuclear Silo',
+  bank: 'Bank',
+};
+
+interface StartGameConfig {
+  mapSize: number;
+  enabledBuildings: Record<BuildingType, boolean>;
+}
 
 interface AdminPanelProps {
   isOpen: boolean;
@@ -22,10 +40,10 @@ interface AdminPanelProps {
   game: GameRecord | null;
   allPlayers: Player[];
   onPlayerUpdated: () => void;
-  onAdvanceRound: () => void;
-  onJumpPhase: () => void;
+  onResolveDay: () => void;
   onResetGame: () => void;
-  onStartGame: () => void;
+  onStartGame: (config: StartGameConfig) => void;
+  onToggleBuilding: (buildingType: BuildingType, enabled: boolean) => void;
   isProcessing: boolean;
 }
 
@@ -35,16 +53,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   game,
   allPlayers,
   onPlayerUpdated,
-  onAdvanceRound,
-  onJumpPhase,
+  onResolveDay,
   onResetGame,
   onStartGame,
+  onToggleBuilding,
   isProcessing,
 }) => {
   // Create player form state
   const [newUsername, setNewUsername] = useState('');
   const [newAvatarUrl, setNewAvatarUrl] = useState('');
-  const [isNewAdmin, setIsNewAdmin] = useState(false);
   const [createSuccessMsg, setCreateSuccessMsg] = useState<string | null>(null);
   const [createErrorMsg, setCreateErrorMsg] = useState<string | null>(null);
   const [isCreatingPlayer, setIsCreatingPlayer] = useState(false);
@@ -64,10 +81,28 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [auditLogs, setAuditLogs] = useState<Array<{ timestamp: string; level: string; message: string }>>([]);
   const [showLogs, setShowLogs] = useState(false);
 
+  // Next-game settings
+  const [startMapSize, setStartMapSize] = useState<number>(DEFAULT_MAP_SIZE);
+  const [startBuildings, setStartBuildings] = useState<Record<BuildingType, boolean>>(
+    createDefaultBuildingConfig()
+  );
+
   if (!isOpen) return null;
 
   const isUnstarted = !game || game.currentDay === 0 || game.endReason === 'waiting_to_start';
   const isGameOver = game?.phase === 'over';
+  const isStagingNextGame = isUnstarted || isGameOver;
+  const activeBuildings = game?.enabledBuildings ?? createDefaultBuildingConfig();
+  const shownBuildings = isStagingNextGame ? startBuildings : activeBuildings;
+  const shownMapSize = isStagingNextGame ? startMapSize : game?.mapSize ?? DEFAULT_MAP_SIZE;
+
+  const handleBuildingToggle = (type: BuildingType) => {
+    if (isStagingNextGame) {
+      setStartBuildings((prev) => ({ ...prev, [type]: !prev[type] }));
+      return;
+    }
+    onToggleBuilding(type, !activeBuildings[type]);
+  };
 
   const handleCreatePlayer = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -83,7 +118,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         body: JSON.stringify({
           username: newUsername.trim(),
           avatarUrl: newAvatarUrl.trim() || undefined,
-          isAdmin: isNewAdmin,
         }),
       });
       const data = await res.json();
@@ -91,7 +125,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         setCreateSuccessMsg(`Player "${data.player.username}" created successfully.`);
         setNewUsername('');
         setNewAvatarUrl('');
-        setIsNewAdmin(false);
         onPlayerUpdated();
         setTimeout(() => setCreateSuccessMsg(null), 4000);
       } else {
@@ -185,8 +218,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-zinc-950 border border-zinc-800 rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-5 flex flex-col gap-5 shadow-2xl">
+    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-2 md:p-4">
+      <div className="bg-zinc-950 border border-zinc-800 rounded-2xl w-full max-w-2xl max-h-[92vh] overflow-y-auto p-3 md:p-5 flex flex-col gap-3 md:gap-5 shadow-2xl">
         {/* Modal Header */}
         <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
           <div className="flex items-center gap-2">
@@ -217,53 +250,90 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           <p className="text-xs text-zinc-400">
             {isUnstarted
               ? 'The game is currently unstarted. When all operatives are provisioned, launch Day 1 to spawn all players.'
-              : 'The game is active. You can force-advance to the next day immediately, or reset back to unstarted.'}
+              : 'The game is active. Resolve the current day to calculate planned actions and advance to the next day, or reset back to unstarted.'}
           </p>
+
+          {/* Per-game settings */}
+          <div className="bg-zinc-950/60 border border-zinc-800 rounded-lg p-3 flex flex-col gap-2.5">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[11px] font-bold text-zinc-200">Map Size</div>
+                <div className="text-[10px] text-zinc-500">
+                  {isStagingNextGame
+                    ? 'Choose the board size for the next game.'
+                    : 'Map size is fixed once the game has started.'}
+                </div>
+              </div>
+              {isStagingNextGame ? (
+                <select
+                  value={startMapSize}
+                  onChange={(e) => setStartMapSize(parseInt(e.target.value, 10))}
+                  className="bg-zinc-950 border border-zinc-700 text-xs text-white rounded-lg px-2 py-1.5"
+                >
+                  {MAP_SIZE_OPTIONS.map((size) => (
+                    <option key={size} value={size}>
+                      {size} × {size}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <span className="text-xs font-mono text-amber-300 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1.5">
+                  {shownMapSize} × {shownMapSize}
+                </span>
+              )}
+            </div>
+
+            <div>
+              <div className="text-[11px] font-bold text-zinc-200 mb-1">Buildings</div>
+              <div className="grid grid-cols-2 gap-1.5">
+                {ALL_BUILDING_TYPES.map((type) => (
+                  <label
+                    key={type}
+                    className="flex items-center gap-2 text-[11px] text-zinc-300 bg-zinc-900/70 border border-zinc-800 rounded-lg px-2 py-1.5 cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={shownBuildings[type]}
+                      disabled={isProcessing}
+                      onChange={() => handleBuildingToggle(type)}
+                      className="accent-amber-500"
+                    />
+                    <span>{BUILDING_LABELS[type]}</span>
+                  </label>
+                ))}
+              </div>
+              <p className="text-[10px] text-zinc-500 mt-1">
+                Disabling a building blocks new construction and interactions with existing ones.
+                Existing buildings stay on the map.
+              </p>
+            </div>
+          </div>
 
           <div className="flex flex-wrap items-center gap-2">
             {/* Start Game Button (if unstarted or game over) */}
             {(isUnstarted || isGameOver) && (
               <button
                 disabled={isProcessing}
-                onClick={onStartGame}
-                className="px-4 py-2 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-zinc-950 font-bold text-xs uppercase tracking-wider rounded-lg shadow-md flex items-center gap-1.5 disabled:opacity-40"
+                onClick={() =>
+                  onStartGame({ mapSize: startMapSize, enabledBuildings: startBuildings })
+                }
+                className="min-h-11 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-zinc-950 font-bold text-xs uppercase tracking-wider rounded-lg flex items-center gap-1.5 disabled:opacity-40"
               >
                 <Play className="w-4 h-4 fill-zinc-950" />
                 {isProcessing ? 'Starting...' : `Launch Game (Spawn ${allPlayers.length} Operative${allPlayers.length === 1 ? '' : 's'})`}
               </button>
             )}
 
-            {/* Jump Phase Button (transitions to next phase with fresh 20h or 4h timer) */}
-            {!isUnstarted && !isGameOver && (
+            {/* Resolve Current Day Button (only during the open phase) */}
+            {!isUnstarted && !isGameOver && game?.phase === 'open' && (
               <button
                 disabled={isProcessing}
-                onClick={onJumpPhase}
-                className="px-4 py-2 bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-400 hover:to-purple-400 text-white font-bold text-xs uppercase tracking-wider rounded-lg shadow-md flex items-center gap-1.5 disabled:opacity-40"
-                title={
-                  game?.phase === 'open'
-                    ? 'Immediately ends Open Phase (sets timer to 0), resolves actions, and starts Closed Phase with a 4-hour countdown'
-                    : 'Immediately ends Closed Phase (sets timer to 0) and begins Open Phase with a 20-hour countdown'
-                }
+                onClick={onResolveDay}
+                className="min-h-11 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs uppercase tracking-wider rounded-lg flex items-center gap-1.5 disabled:opacity-40"
+                title="Instantly calculates today's planned actions and advances to the next day. The timer stays the same — the new day still ends at its scheduled UTC boundary."
               >
                 <FastForward className="w-4 h-4 fill-white" />
-                {isProcessing
-                  ? 'Jumping...'
-                  : game?.phase === 'open'
-                  ? 'Jump Phase → Closed (4h timer)'
-                  : 'Jump Phase → Open (20h timer)'}
-              </button>
-            )}
-
-            {/* Advance Round Button (only when game is active) */}
-            {!isUnstarted && !isGameOver && (
-              <button
-                disabled={isProcessing}
-                onClick={onAdvanceRound}
-                className="px-3.5 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold rounded-lg border border-zinc-700 flex items-center gap-1.5 disabled:opacity-40"
-                title="Force-resolve the day directly to the next Day"
-              >
-                <FastForward className="w-3.5 h-3.5" />
-                {isProcessing ? 'Processing Round...' : 'Advance Day Now'}
+                {isProcessing ? 'Resolving Day...' : 'Resolve Current Day'}
               </button>
             )}
 
@@ -348,16 +418,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center justify-between">
-            <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={isNewAdmin}
-                onChange={(e) => setIsNewAdmin(e.target.checked)}
-                className="accent-amber-500"
-              />
-              <span>Grant Administrator Rights</span>
-            </label>
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-[11px] text-zinc-500 max-w-[280px]">
+              Admin accounts are provisioned by the server. New players never receive administrator rights.
+            </p>
 
             <button
               type="submit"
@@ -466,16 +530,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
                     {!isEditing && (
                       <div className="flex items-center gap-1.5">
-                        {/* Generate Auth Link Button */}
-                        <button
-                          onClick={() => handleGenerateAuthLink(p.id)}
-                          disabled={isGenerating}
-                          className="px-2.5 py-1.5 rounded-lg bg-emerald-950/70 border border-emerald-700/60 hover:bg-emerald-900 text-emerald-300 text-xs font-semibold flex items-center gap-1"
-                          title="Generate one-time invite / auth link"
-                        >
-                          <Key className="w-3.5 h-3.5" />
-                          <span>{isGenerating ? 'Generating...' : 'Auth Link'}</span>
-                        </button>
+                        {/* Generate Auth Link Button (admin links are console-only) */}
+                        {p.isAdmin ? (
+                          <span
+                            className="px-2.5 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-500 text-xs font-semibold flex items-center gap-1"
+                            title="Admin auth links can only be generated from the server console (npm run admin:link)"
+                          >
+                            <Key className="w-3.5 h-3.5" />
+                            <span>Console only</span>
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => handleGenerateAuthLink(p.id)}
+                            disabled={isGenerating}
+                            className="px-2.5 py-1.5 rounded-lg bg-emerald-950/70 border border-emerald-700/60 hover:bg-emerald-900 text-emerald-300 text-xs font-semibold flex items-center gap-1"
+                            title="Generate one-time invite / auth link"
+                          >
+                            <Key className="w-3.5 h-3.5" />
+                            <span>{isGenerating ? 'Generating...' : 'Auth Link'}</span>
+                          </button>
+                        )}
 
                         {/* Edit Profile Button */}
                         <button

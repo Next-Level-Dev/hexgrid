@@ -4,12 +4,35 @@
  */
 import { ActionType, BuildingType } from '../types/game';
 
-export const GAME_RULES = {
-  // Map dimensions
-  GRID_SIZE: 25,
-  MIN_COORD: 1,
-  MAX_COORD: 25,
+/**
+ * The first coordinate is always 1. Map size is chosen per-game by an admin.
+ */
+export const MIN_COORD = 1;
+export const DEFAULT_MAP_SIZE = 25;
+export const MAP_SIZE_MIN = 10;
+export const MAP_SIZE_MAX = 50;
+export const MAP_SIZE_STEP = 5;
+export const MAP_SIZE_OPTIONS: number[] = Array.from(
+  { length: (MAP_SIZE_MAX - MAP_SIZE_MIN) / MAP_SIZE_STEP + 1 },
+  (_, i) => MAP_SIZE_MIN + i * MAP_SIZE_STEP
+);
 
+export const ALL_BUILDING_TYPES: BuildingType[] = ['mine', 'outpost', 'silo', 'bank'];
+
+export function createDefaultBuildingConfig(): Record<BuildingType, boolean> {
+  return { mine: true, outpost: true, silo: true, bank: true };
+}
+
+export function isValidMapSize(size: number): boolean {
+  return (
+    Number.isInteger(size) &&
+    size >= MAP_SIZE_MIN &&
+    size <= MAP_SIZE_MAX &&
+    size % MAP_SIZE_STEP === 0
+  );
+}
+
+export const GAME_RULES = {
   // Player bounds
   INITIAL_HEALTH: 3,
   MAX_HEALTH: 3,
@@ -64,10 +87,10 @@ export const GAME_RULES = {
 
   // Daily cycle schedule (UTC)
   SCHEDULE: {
-    OPEN_PHASE_START_HOUR_UTC: 0,
-    OPEN_PHASE_DURATION_HOURS: 20, // 00:00 to 20:00 UTC
-    CLOSED_PHASE_START_HOUR_UTC: 20,
-    CLOSED_PHASE_DURATION_HOURS: 4, // 20:00 to 24:00 (00:00) UTC
+    OPEN_PHASE_START_HOUR_UTC: 2,
+    OPEN_PHASE_DURATION_HOURS: 22, // 02:00 to 24:00 UTC
+    CLOSED_PHASE_START_HOUR_UTC: 0,
+    CLOSED_PHASE_DURATION_HOURS: 2, // 00:00 to 02:00 UTC
   },
 };
 
@@ -126,6 +149,7 @@ export function isSquareInPlayerRange(
   fromY: number,
   toX: number,
   toY: number,
+  mapSize: number = DEFAULT_MAP_SIZE,
   includeSelf = false
 ): boolean {
   const dx = toX - fromX;
@@ -144,10 +168,10 @@ export function isSquareInPlayerRange(
 
   // Bounds check within map
   if (
-    toX < GAME_RULES.MIN_COORD ||
-    toX > GAME_RULES.MAX_COORD ||
-    toY < GAME_RULES.MIN_COORD ||
-    toY > GAME_RULES.MAX_COORD
+    toX < MIN_COORD ||
+    toX > mapSize ||
+    toY < MIN_COORD ||
+    toY > mapSize
   ) {
     return false;
   }
@@ -161,6 +185,7 @@ export function isSquareInPlayerRange(
 export function getPlayerRangeCoordinates(
   centerX: number,
   centerY: number,
+  mapSize: number = DEFAULT_MAP_SIZE,
   includeSelf = false
 ): Array<{ x: number; y: number }> {
   const coords: Array<{ x: number; y: number }> = [];
@@ -168,7 +193,7 @@ export function getPlayerRangeCoordinates(
     for (let dy = -2; dy <= 2; dy++) {
       const tx = centerX + dx;
       const ty = centerY + dy;
-      if (isSquareInPlayerRange(centerX, centerY, tx, ty, includeSelf)) {
+      if (isSquareInPlayerRange(centerX, centerY, tx, ty, mapSize, includeSelf)) {
         coords.push({ x: tx, y: ty });
       }
     }
@@ -193,10 +218,11 @@ export function getBankClaimValue(currentValue: number): number {
  * - Never directly adjacent to any existing player (Chebyshev distance > 1)
  */
 export function generateSafeSpawnPosition(
-  existingPositions: Array<{ x: number; y: number }>
+  existingPositions: Array<{ x: number; y: number }>,
+  mapSize: number = DEFAULT_MAP_SIZE
 ): { x: number; y: number } {
-  const MIN_SPAWN = 3;
-  const MAX_SPAWN = 23; // Excludes outer 2 layers: 1, 2 and 24, 25
+  const MIN_SPAWN = MIN_COORD + 2;
+  const MAX_SPAWN = mapSize - 2; // Excludes outer 2 layers
 
   for (let attempt = 0; attempt < 1000; attempt++) {
     const x = Math.floor(Math.random() * (MAX_SPAWN - MIN_SPAWN + 1)) + MIN_SPAWN;
@@ -212,7 +238,8 @@ export function generateSafeSpawnPosition(
   }
 
   // Fallback if tight
-  return { x: 13, y: 13 };
+  const center = Math.ceil(mapSize / 2);
+  return { x: center, y: center };
 }
 
 /**

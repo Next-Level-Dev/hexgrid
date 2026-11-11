@@ -9,8 +9,24 @@ import {
   GameStateRecord,
   Player,
   Phase,
+  BuildingType,
 } from '../src/types/game';
-import { GAME_RULES, deterministicShuffle, generateSafeSpawnPosition } from '../src/game/rules';
+import {
+  GAME_RULES,
+  ALL_BUILDING_TYPES,
+  DEFAULT_MAP_SIZE,
+  createDefaultBuildingConfig,
+  isValidMapSize,
+  deterministicShuffle,
+  generateSafeSpawnPosition,
+} from '../src/game/rules';
+import { backupDatabaseIfDue } from './backup';
+import { ensureSingleAdmin } from './admin';
+
+export interface StartGameOptions {
+  mapSize?: number;
+  enabledBuildings?: Partial<Record<BuildingType, boolean>>;
+}
 
 export class GameService {
   private static instance: GameService;
@@ -19,7 +35,9 @@ export class GameService {
 
   private constructor() {
     this.ensureInitialized();
+    backupDatabaseIfDue();
     this.startScheduler();
+    setInterval(() => backupDatabaseIfDue(), 60 * 60 * 1000);
   }
 
   static getInstance(): GameService {
@@ -40,28 +58,9 @@ export class GameService {
    * Initializes initial admin and closed waiting game state if empty.
    */
   ensureInitialized() {
-    // 1. Ensure Admin exists
-    const allPlayers = db.getAllPlayers();
-    let admin = allPlayers.find((p) => p.isAdmin);
-    if (!admin) {
-      const adminId = 'a0000000-0000-0000-0000-000000000001';
-      admin = {
-        id: adminId,
-        username: 'Admin',
-        avatarUrl: 'https://api.dicebear.com/7.x/bottts/svg?seed=Admin',
-        health: 3,
-        points: 1,
-        x: 13,
-        y: 13,
-        isAlive: true,
-        isAdmin: true,
-        peaceVote: 'no',
-        stats: { gamesPlayed: 0, worldPeaces: 0, lastOneStandings: 0, deaths: 0 },
-        games: {},
-      };
-      db.savePlayer(admin);
-      this.log('info', 'Admin account initialized.');
-    }
+    // 1. Ensure exactly one Admin exists (and demote any legacy extra admins)
+    const admin = ensureSingleAdmin();
+    this.log('info', `Admin account ensured: ${admin.username} (${admin.id}).`);
 
     // 2. Ensure initial game exists in closed state waiting for admin to start
     let game = db.getCurrentGame();
@@ -84,6 +83,8 @@ export class GameService {
       phaseEndsAt: phaseEndsAt.toISOString(),
       locked: false,
       endReason: 'waiting_to_start',
+      mapSize: DEFAULT_MAP_SIZE,
+      enabledBuildings: createDefaultBuildingConfig(),
     };
     db.createGame(game);
     this.log('info', `Game ${gameId} initialized in closed state (waiting to be started).`);
@@ -93,14 +94,25 @@ export class GameService {
    * Starts a brand new game, spawning ALL currently registered players.
    * New players created during a running game will be included in the NEXT game!
    */
-  startNewGame(): GameRecord {
+  startNewGame(options: StartGameOptions = {}): GameRecord {
     const gameId = uuidv4();
     const allPlayers = db.getAllPlayers();
     const spawnPositions: Array<{ x: number; y: number }> = [];
 
+    const mapSize =
+      options.mapSize !== undefined && isValidMapSize(options.mapSize)
+        ? options.mapSize
+        : DEFAULT_MAP_SIZE;
+    const enabledBuildings = createDefaultBuildingConfig();
+    for (const type of ALL_BUILDING_TYPES) {
+      if (typeof options.enabledBuildings?.[type] === 'boolean') {
+        enabledBuildings[type] = options.enabledBuildings[type]!;
+      }
+    }
+
     const playersSnapshot: Record<string, any> = {};
     for (const p of allPlayers) {
-      const pos = generateSafeSpawnPosition(spawnPositions);
+      const pos = generateSafeSpawnPosition(spawnPositions, mapSize);
       spawnPositions.push(pos);
 
       p.x = pos.x;
@@ -137,6 +149,8 @@ export class GameService {
       phaseEndsAt: phaseEndsAt.toISOString(),
       locked: false,
       endReason: null,
+      mapSize,
+      enabledBuildings,
     };
     db.createGame(game);
 
@@ -167,29 +181,46 @@ export class GameService {
    */
   getExpectedUtcPhase(now: Date = new Date()): Phase {
     const hour = now.getUTCHours();
-    if (hour >= GAME_RULES.SCHEDULE.CLOSED_PHASE_START_HOUR_UTC) {
-      return 'closed';
-    }
-    return 'open';
+    const start = GAME_RULES.SCHEDULE.CLOSED_PHASE_START_HOUR_UTC;
+    const end = (start + GAME_RULES.SCHEDULE.CLOSED_PHASE_DURATION_HOURS) % 24;
+    // Closed window within one calendar day (e.g. 00:00–02:00) or wrapping
+    // past midnight (e.g. 22:00–02:00).
+    const isClosed = start <= end ? hour >= start && hour < end : hour >= start || hour < end;
+    return isClosed ? 'closed' : 'open';
   }
 
   /**
-   * Calculates start and end timestamps for the current UTC phase window
+   * Calculates start and end timestamps for the current UTC phase window.
+   * If today's window has already elapsed, the next daily occurrence is
+   * returned so the window is always forward-looking.
    */
   getUtcPhaseWindow(now: Date, phase: Phase): { phaseStartedAt: Date; phaseEndsAt: Date } {
     const y = now.getUTCFullYear();
     const m = now.getUTCMonth();
     const d = now.getUTCDate();
 
+    let startHour: number;
+    let durationHours: number;
     if (phase === 'open') {
-      const start = new Date(Date.UTC(y, m, d, 0, 0, 0));
-      const end = new Date(Date.UTC(y, m, d, 20, 0, 0));
-      return { phaseStartedAt: start, phaseEndsAt: end };
+      startHour = GAME_RULES.SCHEDULE.OPEN_PHASE_START_HOUR_UTC;
+      durationHours = GAME_RULES.SCHEDULE.OPEN_PHASE_DURATION_HOURS;
     } else {
-      const start = new Date(Date.UTC(y, m, d, 20, 0, 0));
-      const end = new Date(Date.UTC(y, m, d + 1, 0, 0, 0));
-      return { phaseStartedAt: start, phaseEndsAt: end };
+      startHour = GAME_RULES.SCHEDULE.CLOSED_PHASE_START_HOUR_UTC;
+      durationHours = GAME_RULES.SCHEDULE.CLOSED_PHASE_DURATION_HOURS;
     }
+
+    let start = new Date(Date.UTC(y, m, d, startHour, 0, 0));
+    let end = new Date(
+      Date.UTC(y, m, d + Math.floor((startHour + durationHours) / 24), (startHour + durationHours) % 24, 0, 0)
+    );
+
+    // Roll forward to the next daily occurrence once this one has passed.
+    if (end.getTime() <= now.getTime()) {
+      start = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+      end = new Date(end.getTime() + 24 * 60 * 60 * 1000);
+    }
+
+    return { phaseStartedAt: start, phaseEndsAt: end };
   }
 
   /**
@@ -213,7 +244,7 @@ export class GameService {
     const expectedUtcPhase = this.getExpectedUtcPhase(now);
 
     // Repair a stale open-phase window (e.g. legacy games started with a past
-    // 20:00 end time) instead of prematurely resolving the round.
+    // end time) instead of prematurely resolving the round.
     if (game.phase === 'open' && expectedUtcPhase === 'open' && phaseExpired) {
       const { phaseStartedAt, phaseEndsAt } = this.getUtcPhaseWindow(now, 'open');
       game.phaseStartedAt = phaseStartedAt.toISOString();
@@ -223,73 +254,86 @@ export class GameService {
       return;
     }
 
-    // If current phase has expired by timestamp OR scheduled UTC window transitioned:
-    if (game.phase === 'open' && (phaseExpired || expectedUtcPhase === 'closed')) {
+    // Phase transitions follow the stored phaseEndsAt timestamps so manual
+    // admin phase control is never overridden by the wall-clock UTC schedule.
+    // If current phase has expired by timestamp, transition to the next phase:
+    if (game.phase === 'open' && phaseExpired) {
       this.log('info', `Open phase expired. Transitioning to closed phase and processing round ${game.currentDay}...`);
       this.processRound(game.id, 'closed');
-      const updated = db.getCurrentGame();
-      if (updated && updated.phase === 'closed') {
-        const { phaseStartedAt, phaseEndsAt } = this.getUtcPhaseWindow(now, 'closed');
-        updated.phaseStartedAt = phaseStartedAt.toISOString();
-        updated.phaseEndsAt = phaseEndsAt.toISOString();
-        db.updateGame(updated);
-      }
-    } else if (game.phase === 'closed' && (phaseExpired || expectedUtcPhase === 'open')) {
-      const { phaseStartedAt, phaseEndsAt } = this.getUtcPhaseWindow(now, 'open');
+    } else if (game.phase === 'closed' && phaseExpired) {
       game.phase = 'open';
-      game.phaseStartedAt = phaseStartedAt.toISOString();
-      game.phaseEndsAt = phaseEndsAt.toISOString();
+      game.phaseStartedAt = now.toISOString();
+      game.phaseEndsAt = this.getNextOpenPhaseEnd(now).toISOString();
       db.updateGame(game);
       this.log('info', `Closed phase expired. Game ${game.id} is now OPEN for Day ${game.currentDay}`);
     }
   }
 
   /**
-   * Admin trigger: Immediately jump to the next phase.
-   * Sets current phase timer to 0, transitions immediately,
-   * and initializes the next phase with a full 20-hour (if Open) or 4-hour (if Closed) countdown.
+   * End timestamp of the next natural OPEN phase window: the next
+   * closed-phase start boundary (e.g. 24:00/00:00 UTC) from now.
    */
-  jumpToNextPhase(): { success: boolean; error?: string; game?: GameRecord } {
+  getNextOpenPhaseEnd(now: Date = new Date()): Date {
+    const y = now.getUTCFullYear();
+    const m = now.getUTCMonth();
+    const d = now.getUTCDate();
+    const closeHour = GAME_RULES.SCHEDULE.CLOSED_PHASE_START_HOUR_UTC;
+    const todayEnd = new Date(Date.UTC(y, m, d, closeHour, 0, 0));
+    return now.getTime() < todayEnd.getTime()
+      ? todayEnd
+      : new Date(Date.UTC(y, m, d + 1, closeHour, 0, 0));
+  }
+
+  /**
+   * Admin trigger: instantly resolve the current day.
+   * Calculates all planned actions for the current day and advances the game
+   * to the next day in the OPEN phase, while keeping the timer untouched: the
+   * new day still ends at the same scheduled UTC boundary (the daily cycle
+   * moves exactly 24 hours), so early resolutions never drift the schedule
+   * off its planned route.
+   */
+  resolveCurrentDay(): { success: boolean; error?: string; game?: GameRecord } {
     const game = db.getCurrentGame();
     if (!game) return { success: false, error: 'No active game found' };
 
     if (game.phase === 'over') {
       return { success: false, error: 'Current game has concluded. Launch a new game to restart.' };
     }
+    if (game.currentDay === 0 || game.endReason === 'waiting_to_start') {
+      return { success: false, error: 'Game has not started yet. Use Launch Game to start Day 1.' };
+    }
+    if (game.phase !== 'open') {
+      return { success: false, error: 'The current day can only be resolved during the open phase.' };
+    }
 
     const now = new Date();
-
-    if (game.currentDay === 0 || game.endReason === 'waiting_to_start') {
-      const newGame = this.startNewGame();
-      this.log('info', `Admin jumped phase: Staged game launched on Day 1 ${newGame.phase.toUpperCase()} following the UTC schedule.`);
-      return { success: true, game: newGame };
+    // The timer end is carried over to the next day so the countdown (and the
+    // 24h UTC cycle it belongs to) stays exactly on its planned route.
+    let nextPhaseEndsAt = new Date(game.phaseEndsAt);
+    if (nextPhaseEndsAt.getTime() <= now.getTime()) {
+      // Already-expired edge case: fall back to the next natural boundary.
+      nextPhaseEndsAt = this.getNextOpenPhaseEnd(now);
     }
 
-    if (game.phase === 'open') {
-      // Open -> Closed:
-      // Expires current 20h timer, atomically resolves actions for Day N,
-      // and starts Closed Phase with a fresh 4-hour calculation timer.
-      this.log('info', `Admin jumped phase: ending OPEN phase (timer set to 0), resolving Day ${game.currentDay} and switching to CLOSED phase...`);
-      const result = this.processRound(game.id, 'closed');
-      if (!result.success) return result;
+    this.log(
+      'info',
+      `Admin resolving Day ${game.currentDay}: calculating planned actions and advancing to the next day...`
+    );
+    const result = this.processRound(game.id, 'open');
+    if (!result.success) return result;
 
-      const updated = db.getCurrentGame()!;
+    const updated = db.getCurrentGame()!;
+    if (updated.phase === 'open') {
       updated.phaseStartedAt = now.toISOString();
-      updated.phaseEndsAt = new Date(now.getTime() + 4 * 60 * 60 * 1000).toISOString();
+      updated.phaseEndsAt = nextPhaseEndsAt.toISOString();
       db.updateGame(updated);
-      this.log('info', `Game is now in CLOSED phase for Day ${updated.currentDay} with 4-hour calculation timer.`);
-      return { success: true, game: updated };
-    } else {
-      // Closed -> Open:
-      // Expires current 4h timer, begins Open Phase with a fresh 20-hour timer.
-      this.log('info', `Admin jumped phase: ending CLOSED phase (timer set to 0), opening Day ${game.currentDay} for player actions...`);
-      game.phase = 'open';
-      game.phaseStartedAt = now.toISOString();
-      game.phaseEndsAt = new Date(now.getTime() + 20 * 60 * 60 * 1000).toISOString();
-      db.updateGame(game);
-      this.log('info', `Game is now in OPEN phase for Day ${game.currentDay} with 20-hour action timer.`);
-      return { success: true, game };
     }
+
+    this.log(
+      'info',
+      `Game advanced to Day ${updated.currentDay} (OPEN). Timer unchanged — phase ends ${updated.phaseEndsAt}.`
+    );
+    return { success: true, game: updated };
   }
 
   /**
@@ -324,7 +368,9 @@ export class GameService {
       const { nextStateData, events, endReason } = GameEngine.resolveRound(
         currentState.data,
         actions,
-        nextSeed
+        nextSeed,
+        game.mapSize,
+        game.enabledBuildings
       );
 
       // Save next Day N+1 state
@@ -360,7 +406,14 @@ export class GameService {
 
       // Update game record
       const now = new Date();
-      const { phaseStartedAt, phaseEndsAt } = this.getUtcPhaseWindow(now, targetPhase);
+      const { phaseEndsAt: utcPhaseEndsAt } = this.getUtcPhaseWindow(now, targetPhase);
+      const naturalDurationMs =
+        (targetPhase === 'closed'
+          ? GAME_RULES.SCHEDULE.CLOSED_PHASE_DURATION_HOURS
+          : GAME_RULES.SCHEDULE.OPEN_PHASE_DURATION_HOURS) *
+        60 *
+        60 *
+        1000;
 
       game.currentDay = nextDay;
       if (endReason) {
@@ -369,8 +422,13 @@ export class GameService {
       } else {
         game.phase = targetPhase;
       }
-      game.phaseStartedAt = phaseStartedAt.toISOString();
-      game.phaseEndsAt = phaseEndsAt.toISOString();
+      // Realign with the natural UTC window when it is close at hand, but
+      // never run the phase longer than its normal duration when the round
+      // is resolved off-grid (e.g. an admin ending the phase early).
+      game.phaseStartedAt = now.toISOString();
+      game.phaseEndsAt = new Date(
+        Math.min(now.getTime() + naturalDurationMs, utcPhaseEndsAt.getTime())
+      ).toISOString();
       game.locked = false;
       db.updateGame(game);
 
@@ -387,10 +445,32 @@ export class GameService {
     }
   }
 
-  adminAdvanceRound(): { success: boolean; error?: string } {
+  /**
+   * Enables or disables a building type for the current game.
+   * Existing buildings remain on the map, but their interactions are rejected.
+   */
+  setBuildingEnabled(
+    buildingType: BuildingType,
+    enabled: boolean
+  ): { success: boolean; error?: string; game?: GameRecord } {
+    if (!ALL_BUILDING_TYPES.includes(buildingType)) {
+      return { success: false, error: `Unknown building type: ${buildingType}` };
+    }
+
     const game = db.getCurrentGame();
-    if (!game || game.currentDay === 0) return { success: false, error: 'No active game started' };
-    return this.processRound(game.id, 'open');
+    if (!game) return { success: false, error: 'No active game found' };
+
+    game.enabledBuildings = {
+      ...game.enabledBuildings,
+      [buildingType]: enabled,
+    };
+    db.updateGame(game);
+
+    this.log(
+      'info',
+      `${buildingType.toUpperCase()} ${enabled ? 'enabled' : 'disabled'} for game ${game.id}.`
+    );
+    return { success: true, game };
   }
 
   /**

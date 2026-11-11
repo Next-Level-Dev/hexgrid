@@ -16,6 +16,7 @@ interface PlayerRosterProps {
   allPlayers: Player[];
   state: GameStateData | null;
   currentPlayerId?: string;
+  inspectedPlayerId?: string | null;
   onHoverPlayer?: (playerId: string | null) => void;
 }
 
@@ -23,6 +24,7 @@ export const PlayerRoster: React.FC<PlayerRosterProps> = ({
   allPlayers,
   state,
   currentPlayerId,
+  inspectedPlayerId,
   onHoverPlayer,
 }) => {
   const [isCollapsed, setIsCollapsed] = useState(false);
@@ -30,9 +32,9 @@ export const PlayerRoster: React.FC<PlayerRosterProps> = ({
   const priorityOrder = state?.playerPriorityOrder || [];
 
   return (
-    <div className="bg-zinc-950/90 backdrop-blur-md border border-zinc-800 rounded-2xl shadow-2xl flex flex-col transition-all overflow-hidden max-w-sm w-full">
+    <div className="bg-zinc-950/95 backdrop-blur-md border border-zinc-800 rounded-2xl shadow-xl flex flex-col transition-all overflow-hidden w-full">
       {/* Header */}
-      <div className="flex items-center justify-between p-3.5 border-b border-zinc-800/80 bg-zinc-900/60">
+      <div className="flex items-center justify-between p-3 md:p-3.5 border-b border-zinc-800/80 bg-zinc-900/60">
         <div className="flex items-center gap-2">
           <Users className="w-4 h-4 text-amber-400" />
           <h3 className="text-xs font-bold uppercase tracking-wider text-white">
@@ -41,7 +43,7 @@ export const PlayerRoster: React.FC<PlayerRosterProps> = ({
         </div>
         <button
           onClick={() => setIsCollapsed(!isCollapsed)}
-          className="p-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
+          className="p-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
           title={isCollapsed ? 'Expand Roster' : 'Collapse Roster'}
         >
           {isCollapsed ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
@@ -49,7 +51,7 @@ export const PlayerRoster: React.FC<PlayerRosterProps> = ({
       </div>
 
       {!isCollapsed && (
-        <div className="p-3.5 flex flex-col gap-3 max-h-[500px] overflow-y-auto scrollbar-thin">
+        <div className="p-3 md:p-3.5 flex flex-col gap-3 max-h-[500px] max-md:max-h-[38vh] overflow-y-auto scrollbar-thin">
           {/* Operatives List */}
           <div className="flex flex-col gap-1.5">
             {allPlayers.map((p) => {
@@ -59,15 +61,22 @@ export const PlayerRoster: React.FC<PlayerRosterProps> = ({
               const points = snap ? snap.points : p.points;
               const peaceVote = snap ? snap.peaceVote : p.peaceVote;
               const isCurrent = p.id === currentPlayerId;
+              const isInspected = p.id === inspectedPlayerId;
 
               return (
                 <div
                   key={p.id}
                   onMouseEnter={() => onHoverPlayer && onHoverPlayer(p.id)}
                   onMouseLeave={() => onHoverPlayer && onHoverPlayer(null)}
+                  onClick={() =>
+                    onHoverPlayer &&
+                    onHoverPlayer(inspectedPlayerId === p.id ? null : p.id)
+                  }
                   className={`flex items-center justify-between p-2 rounded-xl border transition-all cursor-pointer ${
                     isCurrent
-                      ? 'bg-amber-500/10 border-amber-500/40 ring-1 ring-amber-500/20'
+                      ? 'bg-amber-500/10 border-amber-500/40'
+                      : isInspected
+                      ? 'bg-red-500/10 border-red-500/30'
                       : 'bg-zinc-900 border-zinc-800/80 hover:bg-zinc-800/80'
                   } ${!isAlive ? 'opacity-60 bg-red-950/20 border-red-900/30' : ''}`}
                 >
@@ -166,7 +175,7 @@ export const PlayerRoster: React.FC<PlayerRosterProps> = ({
               <Info className="w-3 h-3 text-cyan-400" />
               <span>Circular 21-Square Tactical Range</span>
             </div>
-            <p>5×5 perimeter excluding 4 corners and self. Hover any operative to see their circular reach.</p>
+            <p>5×5 perimeter excluding 4 corners and self. Tap or hover any operative to see their circular reach.</p>
           </div>
         </div>
       )}

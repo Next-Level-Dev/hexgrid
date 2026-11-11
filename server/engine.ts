@@ -8,10 +8,14 @@ import {
   ActionSubmission,
   GameEngineEvent,
   Building,
+  BuildingType,
   WinReason,
 } from '../src/types/game';
 import {
   GAME_RULES,
+  MIN_COORD,
+  DEFAULT_MAP_SIZE,
+  createDefaultBuildingConfig,
   getActionPriorityGroup,
   getFixedActionCost,
   isSquareInPlayerRange,
@@ -31,7 +35,9 @@ export class GameEngine {
   static resolveRound(
     currentState: GameStateData,
     actions: ActionSubmission[],
-    nextPrioritySeed: number
+    nextPrioritySeed: number,
+    mapSize: number = DEFAULT_MAP_SIZE,
+    enabledBuildings: Record<BuildingType, boolean> = createDefaultBuildingConfig()
   ): ResolutionResult {
     const events: GameEngineEvent[] = [];
 
@@ -92,10 +98,10 @@ export class GameEngine {
       const pos = projectedPositions.get(act.playerId);
       if (!pos) continue;
       const dir = act.data.direction;
-      if (dir === 'up' && pos.y > GAME_RULES.MIN_COORD) pos.y -= 1;
-      else if (dir === 'down' && pos.y < GAME_RULES.MAX_COORD) pos.y += 1;
-      else if (dir === 'left' && pos.x > GAME_RULES.MIN_COORD) pos.x -= 1;
-      else if (dir === 'right' && pos.x < GAME_RULES.MAX_COORD) pos.x += 1;
+      if (dir === 'up' && pos.y > MIN_COORD) pos.y -= 1;
+      else if (dir === 'down' && pos.y < mapSize) pos.y += 1;
+      else if (dir === 'left' && pos.x > MIN_COORD) pos.x -= 1;
+      else if (dir === 'right' && pos.x < mapSize) pos.x += 1;
     }
 
     // Accept targets in either the player's current reach or projected reach.
@@ -106,11 +112,11 @@ export class GameEngine {
       targetX: number,
       targetY: number
     ) => {
-      if (isSquareInPlayerRange(currentX, currentY, targetX, targetY)) return true;
+      if (isSquareInPlayerRange(currentX, currentY, targetX, targetY, mapSize)) return true;
       const projected = projectedPositions.get(playerId);
       if (!projected) return false;
       if (projected.x === currentX && projected.y === currentY) return false;
-      return isSquareInPlayerRange(projected.x, projected.y, targetX, targetY);
+      return isSquareInPlayerRange(projected.x, projected.y, targetX, targetY, mapSize);
     };
 
     // Helper functions
@@ -154,6 +160,27 @@ export class GameEngine {
       }
 
       const actionType = act.data.actionType;
+
+      // Reject actions that involve a building type disabled for this game.
+      const buildingTypeForAction: BuildingType | null =
+        actionType === 'build'
+          ? act.data.buildingType ?? null
+          : actionType === 'claim_bank'
+          ? 'bank'
+          : actionType === 'launch_nuke'
+          ? 'silo'
+          : null;
+      if (buildingTypeForAction && !enabledBuildings[buildingTypeForAction]) {
+        events.push({
+          id: uuidv4(),
+          type: 'cancelled',
+          playerId: actor.id,
+          reason: 'Building type disabled for this game',
+          description: `${actor.username}'s ${actionType.replace(/_/g, ' ')} was cancelled: ${buildingTypeForAction} is disabled in this game`,
+        });
+        continue;
+      }
+
       const fixedCost = getFixedActionCost(actionType, act.data.buildingType);
 
       // Point Validation
@@ -283,17 +310,17 @@ export class GameEngine {
 
         // Validate coordinates
         if (
-          targetX < GAME_RULES.MIN_COORD ||
-          targetX > GAME_RULES.MAX_COORD ||
-          targetY < GAME_RULES.MIN_COORD ||
-          targetY > GAME_RULES.MAX_COORD
+          targetX < MIN_COORD ||
+          targetX > mapSize ||
+          targetY < MIN_COORD ||
+          targetY > mapSize
         ) {
           events.push({
             id: uuidv4(),
             type: 'cancelled',
             playerId: actor.id,
             reason: 'Target out of bounds',
-            description: `${actor.username}'s construction was outside the 25x25 grid`,
+            description: `${actor.username}'s construction was outside the ${mapSize}x${mapSize} grid`,
           });
           continue;
         }
@@ -438,10 +465,10 @@ export class GameEngine {
 
         // Bounds check
         if (
-          newX < GAME_RULES.MIN_COORD ||
-          newX > GAME_RULES.MAX_COORD ||
-          newY < GAME_RULES.MIN_COORD ||
-          newY > GAME_RULES.MAX_COORD
+          newX < MIN_COORD ||
+          newX > mapSize ||
+          newY < MIN_COORD ||
+          newY > mapSize
         ) {
           events.push({
             id: uuidv4(),
@@ -500,7 +527,7 @@ export class GameEngine {
           (b) => b.type === 'mine' && b.x === newX && b.y === newY && b.ownerId !== actor.id
         );
 
-        if (mineIndex !== -1) {
+        if (mineIndex !== -1 && enabledBuildings.mine) {
           const mine = buildings[mineIndex];
           // Detonate mine
           buildings.splice(mineIndex, 1);
@@ -541,7 +568,7 @@ export class GameEngine {
 
         // Check range from player's ACTUAL position at execution time
         // If movement was blocked, the player stayed in place and the attack will cancel if out of reach!
-        if (!isSquareInPlayerRange(actor.x, actor.y, targetX, targetY)) {
+        if (!isSquareInPlayerRange(actor.x, actor.y, targetX, targetY, mapSize)) {
           events.push({
             id: uuidv4(),
             type: 'cancelled',
@@ -660,10 +687,10 @@ export class GameEngine {
             const bx = targetX + dx;
             const by = targetY + dy;
             if (
-              bx < GAME_RULES.MIN_COORD ||
-              bx > GAME_RULES.MAX_COORD ||
-              by < GAME_RULES.MIN_COORD ||
-              by > GAME_RULES.MAX_COORD
+              bx < MIN_COORD ||
+              bx > mapSize ||
+              by < MIN_COORD ||
+              by > mapSize
             ) {
               continue;
             }

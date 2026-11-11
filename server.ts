@@ -3,6 +3,7 @@
  * Conforms to AI Studio environment guidelines:
  * Runs on Port 3000, mounts Express APIs, and hooks Vite middlewares in dev mode.
  */
+import 'dotenv/config';
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import path from 'path';
