@@ -13,3 +13,4 @@ database/*.db-shm
 database/*.db-wal
 database/backups/
 nuked_databases/
+database/

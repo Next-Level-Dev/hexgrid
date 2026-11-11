@@ -1,8 +1,8 @@
 {
   "appName": "hexgrid-tactics",
-  "port": 3000,
+  "port": 3003,
   "nodeEnv": "production",
   "pm2ProcessName": "hexgrid-tactics",
-  "useCaddy": false,
+  "useCaddy": true,
   "caddyDomain": "game.local"
 }

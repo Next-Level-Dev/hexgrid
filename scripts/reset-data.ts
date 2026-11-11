@@ -66,10 +66,8 @@ async function main() {
   }
 
   if (backupFiles.length > 0) {
-    const backupTarget = path.join(targetDir, 'backups');
-    fs.mkdirSync(backupTarget, { recursive: true });
     for (const file of backupFiles) {
-      fs.renameSync(path.join(BACKUP_DIR, file), path.join(backupTarget, file));
+      fs.unlinkSync(path.join(BACKUP_DIR, file));
     }
   }
 
@@ -77,7 +75,7 @@ async function main() {
   fs.mkdirSync(DB_DIR, { recursive: true });
 
   console.log(`[ResetData] Moved ${existingDbFiles.length} database file(s) to ${targetDir}`);
-  console.log(`[ResetData] Reset ${backupFiles.length} backup(s) (moved to ${path.join(targetDir, 'backups')})`);
+  console.log(`[ResetData] Reset ${backupFiles.length} backup(s)`);
   console.log('[ResetData] database/ is now empty. A fresh database will be created when the app starts.');
   process.exit(0);
 }
