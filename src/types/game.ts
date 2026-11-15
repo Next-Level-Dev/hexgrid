@@ -26,8 +26,9 @@ export interface Player {
   id: string; // UUID
   username: string;
   avatarUrl: string;
-  health: number; // 0 to 3
+  health: number; // 0 to the game's configured playerHealth
   points: number;
+  tokens: number; // persistent reward balance carried between games
   x: number;
   y: number;
   isAlive: boolean;
@@ -57,6 +58,7 @@ export type ActionType =
   | 'build'
   | 'move'
   | 'attack'
+  | 'assassinate'
   | 'claim_bank'
   | 'launch_nuke';
 
@@ -96,6 +98,7 @@ export interface GameEngineEvent {
     | 'mine_triggered'
     | 'nuke_launch'
     | 'bank_claimed'
+    | 'world_peace'
     | 'cancelled';
   playerId?: string;
   targetPlayerId?: string;
@@ -127,6 +130,7 @@ export interface GameStateData {
     peaceVote: 'yes' | 'no';
   }>;
   buildings: Building[];
+  minesPlaced?: Record<string, number>; // Lifetime mines placed per player (removed mines still count)
   events?: GameEngineEvent[]; // Authoritative events that created this state from previous day
 }
 
@@ -139,7 +143,12 @@ export interface GameRecord {
   locked: boolean;
   endReason?: WinReason;
   mapSize: number;
+  playerHealth: number;
+  rewardPool: number;
   enabledBuildings: Record<BuildingType, boolean>;
+  mineLimit: number;
+  mineLimitIncreaseDays: number;
+  assassinationCost: number;
 }
 
 export interface GameStateRecord {

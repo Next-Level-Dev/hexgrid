@@ -2,11 +2,13 @@
 
 html {
   height: 100%;
+  overflow: hidden;
 }
 
 body {
   height: 100%;
   margin: 0;
+  overflow: hidden;
   background-color: #090b10;
   overscroll-behavior: none;
   -webkit-tap-highlight-color: transparent;
@@ -14,6 +16,16 @@ body {
 
 #root {
   height: 100%;
+  overflow: hidden;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 
 /* Remove double-tap zoom delay on interactive controls. */

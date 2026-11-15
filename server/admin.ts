@@ -18,6 +18,7 @@ function createDefaultAdmin(): Player {
     avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=${DEFAULT_ADMIN_USERNAME}`,
     health: 3,
     points: 1,
+    tokens: 0,
     x: 13,
     y: 13,
     isAlive: true,

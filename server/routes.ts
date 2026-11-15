@@ -22,12 +22,20 @@ import {
   BuildingType,
   GameEngineEvent,
   GameStateData,
+  GameRecord,
 } from '../src/types/game';
 import {
   ALL_BUILDING_TYPES,
   DEFAULT_MAP_SIZE,
   isValidMapSize,
+  isValidPlayerHealth,
+  isValidRewardPool,
+  isValidMineLimit,
+  isValidMineLimitIncreaseDays,
+  isValidAssassinationCost,
   getActionPriorityGroup,
+  getMineLimitForDay,
+  getNextMineLimitIncreaseDay,
   generateSafeSpawnPosition,
 } from '../src/game/rules';
 
@@ -43,6 +51,27 @@ function getHighestVisibleDay(game: { currentDay: number; phase: string }): numb
   if (!game || game.currentDay <= 0) return 0;
   if (game.phase === 'closed') return Math.max(1, game.currentDay - 1);
   return game.currentDay;
+}
+
+/**
+ * Overlays the live (or latest visible) game snapshot onto the stored player
+ * records. Points, health, position and alive state only exist inside the game
+ * state, so without this the API would keep returning the placeholder values
+ * (1 point, full health) after a server restart.
+ */
+function withLivePlayerState(players: Player[], game: GameRecord | null): Player[] {
+  if (!game || game.currentDay <= 0) return players;
+
+  const visibleDay = getHighestVisibleDay(game);
+  if (visibleDay <= 0) return players;
+
+  const state = db.getGameState(game.id, visibleDay);
+  if (!state) return players;
+
+  return players.map((player) => {
+    const snap = state.data.players[player.id];
+    return snap ? { ...player, ...snap } : player;
+  });
 }
 
 function findPlayerByUsername(username: string, excludeId?: string): Player | undefined {
@@ -86,8 +115,21 @@ function buildMineOwnerMap(gameId: string, upToDay: number): Map<string, string>
 function sanitizeStateForViewer(
   data: GameStateData,
   viewerId: string | undefined,
-  mineOwners: Map<string, string>
+  mineOwners: Map<string, string>,
+  mineCounts: Map<string, number>,
+  revealMines: boolean
 ): GameStateData {
+  const viewerMineCount = viewerId ? mineCounts.get(viewerId) ?? 0 : 0;
+  const minesPlaced: Record<string, number> = viewerId
+    ? { [viewerId]: viewerMineCount }
+    : {};
+
+  // Once the game is over, mines are no longer secret and the full replay is
+  // safe to reveal.
+  if (revealMines) {
+    return { ...data, minesPlaced };
+  }
+
   const buildings = data.buildings.filter(
     (building) => building.type !== 'mine' || building.ownerId === viewerId
   );
@@ -114,6 +156,10 @@ function sanitizeStateForViewer(
       // the destruction, revealing where the mine was.
       if (event.type === 'building_destroyed') return null;
 
+      // Other players' placements are skipped completely during a live game
+      // so replays never mention that a hidden mine was built.
+      if (event.type === 'build') return null;
+
       const redacted: GameEngineEvent = { ...event };
       delete redacted.fromX;
       delete redacted.fromY;
@@ -122,23 +168,25 @@ function sanitizeStateForViewer(
 
       if (event.type === 'mine_triggered') {
         redacted.description = `A hidden mine detonated! -${event.damage ?? 0} HP`;
-      } else if (event.type === 'build') {
-        redacted.description = 'A hidden mine was constructed.';
       }
 
       return redacted;
     })
     .filter((event): event is GameEngineEvent => event !== null);
 
-  return { ...data, buildings, events };
+  return { ...data, buildings, minesPlaced, events };
 }
 
 // --- User & Session Info ---
 
 apiRouter.get('/me', (req: AuthenticatedRequest, res: Response) => {
-  const allPlayers = db.getAllPlayers();
+  const game = db.getCurrentGame();
+  const allPlayers = withLivePlayerState(db.getAllPlayers(), game);
+  const player = req.player
+    ? allPlayers.find((p) => p.id === req.player!.id) ?? req.player
+    : null;
   res.json({
-    player: req.player || null,
+    player,
     allPlayers,
   });
 });
@@ -183,6 +231,7 @@ apiRouter.post('/auth/redeem-invite', (req: AuthenticatedRequest, res: Response)
       avatarUrl: `https://api.dicebear.com/10.x/initial-face/svg?seed=${encodeURIComponent(invite.username)}`,
       health: 3,
       points: 1,
+      tokens: 0,
       x: safePos.x,
       y: safePos.y,
       isAlive: true,
@@ -310,10 +359,21 @@ apiRouter.get('/game/state/:day', (req: AuthenticatedRequest, res: Response) => 
     return;
   }
 
-  // Mines are only ever visible to their owner, regardless of game phase.
+  // Mines stay private while the game is running. Once it is over the full
+  // board (including every mine) can be revealed for post-game replays.
   const viewerId = req.player?.id;
   const mineOwners = buildMineOwnerMap(game.id, requestedDay);
-  const sanitizedState = sanitizeStateForViewer(stateRecord.data, viewerId, mineOwners);
+  const mineCounts = new Map<string, number>();
+  for (const ownerId of mineOwners.values()) {
+    mineCounts.set(ownerId, (mineCounts.get(ownerId) ?? 0) + 1);
+  }
+  const sanitizedState = sanitizeStateForViewer(
+    stateRecord.data,
+    viewerId,
+    mineOwners,
+    mineCounts,
+    game.phase === 'over'
+  );
 
   res.json({
     day: stateRecord.day,
@@ -376,6 +436,7 @@ apiRouter.post('/game/actions', requireAuth, (req: AuthenticatedRequest, res: Re
   }
 
   // Reject any action that references a building type disabled for this game.
+  const nukeSiloIds = new Set<string>();
   for (const item of rawActions) {
     const disabledBuildingType: BuildingType | null =
       item.actionType === 'build'
@@ -389,6 +450,94 @@ apiRouter.post('/game/actions', requireAuth, (req: AuthenticatedRequest, res: Re
     if (disabledBuildingType && !game.enabledBuildings[disabledBuildingType]) {
       res.status(400).json({
         error: `${disabledBuildingType} buildings are disabled in this game`,
+      });
+      return;
+    }
+
+    if (item.actionType === 'assassinate') {
+      if (game.assassinationCost <= 0) {
+        res.status(400).json({ error: 'Assassination is disabled in this game' });
+        return;
+      }
+      const targetPlayerId =
+        typeof item.targetPlayerId === 'string' ? item.targetPlayerId : '';
+      const target = targetPlayerId
+        ? currentState.data.players[targetPlayerId]
+        : undefined;
+      if (!target || !target.isAlive || targetPlayerId === req.player!.id) {
+        res.status(400).json({ error: 'Assassination target must be a living opponent' });
+        return;
+      }
+    }
+
+    if (item.actionType === 'launch_nuke') {
+      const buildingId = typeof item.buildingId === 'string' ? item.buildingId : '';
+      const silo = buildingId
+        ? currentState.data.buildings.find((b) => b.id === buildingId)
+        : undefined;
+      if (
+        !silo ||
+        silo.type !== 'silo' ||
+        silo.ownerId !== req.player!.id ||
+        !silo.isArmed ||
+        silo.isSpent
+      ) {
+        res.status(400).json({
+          error: 'Nuclear launches must target one of your ready, armed silos',
+        });
+        return;
+      }
+      if (nukeSiloIds.has(buildingId)) {
+        res.status(400).json({ error: 'Each ready silo can only be assigned one nuclear target' });
+        return;
+      }
+      nukeSiloIds.add(buildingId);
+
+      const targetX = parseInt(item.x, 10);
+      const targetY = parseInt(item.y, 10);
+      if (
+        !Number.isInteger(targetX) ||
+        !Number.isInteger(targetY) ||
+        targetX < 1 ||
+        targetX > game.mapSize ||
+        targetY < 1 ||
+        targetY > game.mapSize
+      ) {
+        res.status(400).json({ error: 'Nuclear target must be a valid tile on the map' });
+        return;
+      }
+    }
+  }
+
+  // Enforce the lifetime mine limit at submission time as well as in the
+  // engine. Removed mines are reconstructed from all states up to today.
+  const plannedMineBuilds = rawActions.filter(
+    (item) => item.actionType === 'build' && item.buildingType === 'mine'
+  ).length;
+  if (plannedMineBuilds > 0) {
+    const mineOwners = buildMineOwnerMap(game.id, game.currentDay);
+    const mineCounts = new Map<string, number>();
+    for (const ownerId of mineOwners.values()) {
+      mineCounts.set(ownerId, (mineCounts.get(ownerId) ?? 0) + 1);
+    }
+    const used = Math.max(
+      mineCounts.get(req.player!.id) ?? 0,
+      currentState.data.minesPlaced?.[req.player!.id] ?? 0
+    );
+    const limit = getMineLimitForDay(
+      game.mineLimit,
+      game.currentDay,
+      game.mineLimitIncreaseDays
+    );
+    if (used + plannedMineBuilds > limit) {
+      const nextIncrease = getNextMineLimitIncreaseDay(
+        game.currentDay,
+        game.mineLimitIncreaseDays
+      );
+      res.status(400).json({
+        error: `Mine limit reached: ${used}/${limit} placed.${
+          nextIncrease ? ` The limit increases on Day ${nextIncrease}.` : ''
+        }`,
       });
       return;
     }
@@ -519,6 +668,7 @@ apiRouter.post('/admin/players', requireAdmin, (req: AuthenticatedRequest, res: 
     avatarUrl: avatarUrl?.trim() || `https://api.dicebear.com/10.x/initial-face/svg?seed=${encodeURIComponent(username.trim())}`,
     health: 3,
     points: 1,
+    tokens: 0,
     x: 13,
     y: 13,
     isAlive: true,
@@ -609,13 +759,69 @@ apiRouter.post('/admin/players/:id/reset-sessions', requireAdmin, (req: Authenti
 });
 
 apiRouter.post('/admin/start-game', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
-  const { mapSize, enabledBuildings } = req.body || {};
+  const {
+    mapSize,
+    playerHealth,
+    rewardPool,
+    enabledBuildings,
+    mineLimit,
+    mineLimitIncreaseDays,
+    assassinationCost,
+  } = req.body || {};
 
   if (mapSize !== undefined) {
     const parsedMapSize = Number(mapSize);
     if (!isValidMapSize(parsedMapSize)) {
       res.status(400).json({
         error: 'Map size must be between 10 and 50 in increments of 5',
+      });
+      return;
+    }
+  }
+
+  if (playerHealth !== undefined) {
+    const parsedPlayerHealth = Number(playerHealth);
+    if (!isValidPlayerHealth(parsedPlayerHealth)) {
+      res.status(400).json({
+        error: 'Player health must be between 1 and 10 in increments of 1',
+      });
+      return;
+    }
+  }
+
+  if (rewardPool !== undefined) {
+    const parsedRewardPool = Number(rewardPool);
+    if (!isValidRewardPool(parsedRewardPool)) {
+      res.status(400).json({
+        error: 'Reward pool must be a whole number of 0 or greater',
+      });
+      return;
+    }
+  }
+
+  if (mineLimit !== undefined) {
+    const parsedMineLimit = Number(mineLimit);
+    if (!isValidMineLimit(parsedMineLimit)) {
+      res.status(400).json({ error: 'Mine limit must be a whole number between 0 and 99' });
+      return;
+    }
+  }
+
+  if (mineLimitIncreaseDays !== undefined) {
+    const parsedIncreaseDays = Number(mineLimitIncreaseDays);
+    if (!isValidMineLimitIncreaseDays(parsedIncreaseDays)) {
+      res.status(400).json({
+        error: 'Mine limit increase interval must be between 1 and 999 days',
+      });
+      return;
+    }
+  }
+
+  if (assassinationCost !== undefined) {
+    const parsedAssassinationCost = Number(assassinationCost);
+    if (!isValidAssassinationCost(parsedAssassinationCost)) {
+      res.status(400).json({
+        error: 'Assassination cost must be a whole number between 0 and 99',
       });
       return;
     }
@@ -632,10 +838,94 @@ apiRouter.post('/admin/start-game', requireAdmin, (req: AuthenticatedRequest, re
 
   const game = gameService.startNewGame({
     mapSize: mapSize !== undefined ? Number(mapSize) : undefined,
+    playerHealth: playerHealth !== undefined ? Number(playerHealth) : undefined,
+    rewardPool: rewardPool !== undefined ? Number(rewardPool) : undefined,
     enabledBuildings: buildingOverrides,
+    mineLimit: mineLimit !== undefined ? Number(mineLimit) : undefined,
+    mineLimitIncreaseDays:
+      mineLimitIncreaseDays !== undefined ? Number(mineLimitIncreaseDays) : undefined,
+    assassinationCost:
+      assassinationCost !== undefined ? Number(assassinationCost) : undefined,
   });
   res.json({ success: true, game });
 });
+
+apiRouter.post('/admin/end-game-world-peace', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+  const result = gameService.endGameEarly();
+  if (!result.success) {
+    res.status(400).json({ error: result.error });
+    return;
+  }
+  res.json({
+    success: true,
+    game: result.game,
+    distributed: result.distributed,
+    perPlayer: result.perPlayer,
+  });
+});
+
+apiRouter.patch('/admin/game/reward-pool', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+  const { rewardPool } = req.body || {};
+  const parsedRewardPool = Number(rewardPool);
+
+  if (!isValidRewardPool(parsedRewardPool)) {
+    res.status(400).json({ error: 'Reward pool must be a whole number of 0 or greater' });
+    return;
+  }
+
+  const result = gameService.updateRewardPool(parsedRewardPool);
+  if (!result.success) {
+    res.status(400).json({ error: result.error });
+    return;
+  }
+  res.json({ success: true, game: result.game });
+});
+
+apiRouter.patch('/admin/game/mine-rules', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+  const { mineLimit, mineLimitIncreaseDays } = req.body || {};
+  const parsedMineLimit = Number(mineLimit);
+  const parsedIncreaseDays = Number(mineLimitIncreaseDays);
+
+  if (!isValidMineLimit(parsedMineLimit)) {
+    res.status(400).json({ error: 'Mine limit must be a whole number between 0 and 99' });
+    return;
+  }
+  if (!isValidMineLimitIncreaseDays(parsedIncreaseDays)) {
+    res.status(400).json({
+      error: 'Mine limit increase interval must be between 1 and 999 days',
+    });
+    return;
+  }
+
+  const result = gameService.updateMineRules(parsedMineLimit, parsedIncreaseDays);
+  if (!result.success) {
+    res.status(400).json({ error: result.error });
+    return;
+  }
+  res.json({ success: true, game: result.game });
+});
+
+apiRouter.patch(
+  '/admin/game/assassination-cost',
+  requireAdmin,
+  (req: AuthenticatedRequest, res: Response) => {
+    const parsedCost = Number(req.body?.assassinationCost);
+
+    if (!isValidAssassinationCost(parsedCost)) {
+      res.status(400).json({
+        error: 'Assassination cost must be a whole number between 0 and 99',
+      });
+      return;
+    }
+
+    const result = gameService.updateAssassinationCost(parsedCost);
+    if (!result.success) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.json({ success: true, game: result.game });
+  }
+);
 
 apiRouter.patch('/admin/game/buildings', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
   const { buildingType, enabled } = req.body || {};

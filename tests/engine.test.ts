@@ -240,17 +240,58 @@ function runTestSuite() {
     console.log('  Passed: Bank grew, was claimed for full value, and was consumed.');
   }
 
-  // Test 7: Nuclear Silo Arming & 3x3 Blast Damage
-  console.log('\nTest 7: Nuclear Silo Launch & 3x3 Blast');
+  // Test 7: Nuclear Silo Arming & 13-tile Blast Damage
+  console.log('\nTest 7: Nuclear Silo Launch & 13-tile Blast');
   {
+    const blastOffsets: Array<[number, number, number]> = [
+      [0, 0, 3],
+      [-1, -1, 2],
+      [0, -1, 2],
+      [1, -1, 2],
+      [-1, 0, 2],
+      [1, 0, 2],
+      [-1, 1, 2],
+      [0, 1, 2],
+      [1, 1, 2],
+      [0, -2, 1],
+      [0, 2, 1],
+      [-2, 0, 1],
+      [2, 0, 1],
+    ];
+
+    const players: GameStateData['players'] = {
+      p1: { id: 'p1', username: 'P1', avatarUrl: '', health: 3, points: 5, x: 0, y: 0, isAlive: true, peaceVote: 'no' },
+    };
+    blastOffsets.forEach(([dx, dy], index) => {
+      players[`target${index}`] = {
+        id: `target${index}`,
+        username: `Target ${index}`,
+        avatarUrl: '',
+        health: 5,
+        points: 1,
+        x: 15 + dx,
+        y: 15 + dy,
+        isAlive: true,
+        peaceVote: 'no',
+      };
+    });
+    // Just outside the blast: diagonal at Chebyshev distance 2.
+    players['outside'] = {
+      id: 'outside',
+      username: 'Outside',
+      avatarUrl: '',
+      health: 5,
+      points: 1,
+      x: 17,
+      y: 17,
+      isAlive: true,
+      peaceVote: 'no',
+    };
+
     const state: GameStateData = {
       prioritySeed: 12345,
       playerPriorityOrder: ['p1'],
-      players: {
-        p1: { id: 'p1', username: 'P1', avatarUrl: '', health: 3, points: 5, x: 0, y: 0, isAlive: true, peaceVote: 'no' },
-        target1: { id: 'target1', username: 'Center', avatarUrl: '', health: 3, points: 1, x: 15, y: 15, isAlive: true, peaceVote: 'no' },
-        target2: { id: 'target2', username: 'Surround', avatarUrl: '', health: 3, points: 1, x: 16, y: 15, isAlive: true, peaceVote: 'no' },
-      },
+      players,
       buildings: [
         {
           id: 'silo-1',
@@ -259,7 +300,7 @@ function runTestSuite() {
           x: 1,
           y: 1,
           health: 1,
-          isArmed: true, // Armed
+          isArmed: true,
         },
       ],
     };
@@ -271,18 +312,26 @@ function runTestSuite() {
         day: 1,
         playerId: 'p1',
         priorityGroup: 5,
-        data: { actionType: 'launch_nuke', x: 15, y: 15, orderIndex: 0 },
+        data: { actionType: 'launch_nuke', buildingId: 'silo-1', x: 15, y: 15, orderIndex: 0 },
       },
     ];
 
     const result = GameEngine.resolveRound(state, actions, 3333);
-    // Center target took 2 damage -> 3 - 2 = 1 HP
-    assert.strictEqual(result.nextStateData.players['target1'].health, 1, 'Center target took 2 damage');
-    // Surrounding target took 1 damage -> 3 - 1 = 2 HP
-    assert.strictEqual(result.nextStateData.players['target2'].health, 2, 'Surround target took 1 damage');
-    // Silo is consumed
+    blastOffsets.forEach(([, , damage], index) => {
+      assert.strictEqual(
+        result.nextStateData.players[`target${index}`].health,
+        5 - damage,
+        `Blast tile ${index} must take ${damage} damage`
+      );
+    });
+    assert.strictEqual(result.nextStateData.players['outside'].health, 5, 'Outside tile takes no damage');
+    assert.strictEqual(
+      result.events.filter((e) => e.type === 'damage').length,
+      13,
+      'Nuclear blast must damage exactly 13 tiles'
+    );
     assert.strictEqual(result.nextStateData.buildings.length, 0, 'Silo consumed upon firing');
-    console.log('  Passed: Nuclear strike dealt 2 center and 1 surround damage.');
+    console.log('  Passed: Nuclear strike hit 13 tiles for 3/2/1 damage.');
   }
 
   // Test 8: World Peace and Last Player Standing Win Conditions
@@ -436,8 +485,8 @@ function runTestSuite() {
     console.log('  Passed: Blocked movement kept player at origin and cancelled out-of-range attack.');
   }
 
-  // Test 11: Bank Claim From Projected (Ghost) Range
-  console.log('\nTest 11: Bank Claim From Projected Range');
+  // Test 11: Bank Claim Uses Current Range (Not Projected/Ghost Range)
+  console.log('\nTest 11: Bank Claim Uses Current Range');
   {
     const baseState: GameStateData = {
       prioritySeed: 12345,
@@ -450,8 +499,9 @@ function runTestSuite() {
       ],
     };
 
-    // Move right first (5,5 -> 6,5), then claim the bank at (8,5).
-    // The bank is out of range from (5,5) but in range from the projected (6,5).
+    // Move right first (5,5 -> 6,5), then try to claim the bank at (8,5).
+    // The bank is only in range from the projected (6,5), which is not allowed
+    // for building actions.
     const actions: ActionSubmission[] = [
       {
         id: 'a-move',
@@ -473,10 +523,29 @@ function runTestSuite() {
 
     const result = GameEngine.resolveRound(baseState, actions, 4321);
     assert.strictEqual(result.nextStateData.players['p1'].x, 6, 'Player should have moved right');
-    assert.strictEqual(result.nextStateData.buildings.length, 0, 'Bank should be claimed from projected range');
+    assert.strictEqual(
+      result.nextStateData.buildings.length,
+      1,
+      'Bank must not be claimed from projected range'
+    );
     assert(
-      result.events.some((e) => e.type === 'bank_claimed'),
-      'Bank claim should have executed'
+      !result.events.some((e) => e.type === 'bank_claimed'),
+      'Projected-only bank claim must be cancelled'
+    );
+    assert(
+      result.events.some((e) => e.type === 'cancelled'),
+      'Projected-only bank claim should be cancelled'
+    );
+
+    // A bank inside the current range still works (claim resolves before move).
+    const nearState: GameStateData = JSON.parse(JSON.stringify(baseState));
+    nearState.buildings[0].x = 7;
+    const nearResult = GameEngine.resolveRound(nearState, actions, 4321);
+    assert.strictEqual(nearResult.nextStateData.players['p1'].x, 6, 'Player should still move right');
+    assert.strictEqual(nearResult.nextStateData.buildings.length, 0, 'In-range bank should be claimed');
+    assert(
+      nearResult.events.some((e) => e.type === 'bank_claimed'),
+      'In-range bank claim should execute'
     );
 
     // Same setup but the bank is too far even from the projected position.
@@ -488,7 +557,7 @@ function runTestSuite() {
       farResult.events.some((e) => e.type === 'cancelled'),
       'Out-of-range bank claim should be cancelled'
     );
-    console.log('  Passed: Claim uses projected range and rejects truly out-of-range banks.');
+    console.log('  Passed: Claim uses the current range and rejects projected-only banks.');
   }
 
   // Test 12: Custom map size bounds
@@ -603,7 +672,355 @@ function runTestSuite() {
     console.log('  Passed: Disabled buildings reject construction, claims and launches.');
   }
 
-  console.log('\nAll Game Engine tests passed successfully! [13/13]');
+  // Test 14: Point transfers use current range, never projected move range
+  console.log('\nTest 14: Point Transfers Require Current Range');
+  {
+    const state: GameStateData = {
+      prioritySeed: 12345,
+      playerPriorityOrder: ['p1', 'p2'],
+      players: {
+        p1: { id: 'p1', username: 'P1', avatarUrl: '', health: 3, points: 5, x: 5, y: 5, isAlive: true, peaceVote: 'no' },
+        p2: { id: 'p2', username: 'P2', avatarUrl: '', health: 3, points: 5, x: 9, y: 5, isAlive: true, peaceVote: 'no' },
+      },
+      buildings: [],
+    };
+
+    const actions: ActionSubmission[] = [
+      {
+        id: 'a-send',
+        gameId: 'g1',
+        day: 1,
+        playerId: 'p1',
+        priorityGroup: 1,
+        data: { actionType: 'send_points', targetPlayerId: 'p2', amount: 2, orderIndex: 0 },
+      },
+      {
+        id: 'a-move-1',
+        gameId: 'g1',
+        day: 1,
+        playerId: 'p1',
+        priorityGroup: 4,
+        data: { actionType: 'move', direction: 'right', orderIndex: 1 },
+      },
+      {
+        id: 'a-move-2',
+        gameId: 'g1',
+        day: 1,
+        playerId: 'p1',
+        priorityGroup: 4,
+        data: { actionType: 'move', direction: 'right', orderIndex: 2 },
+      },
+    ];
+
+    // P2 is out of range from P1's current position but would be in range from
+    // P1's projected position after both moves. Transfers resolve first, so this
+    // transfer must be cancelled.
+    const projectedOnly = GameEngine.resolveRound(state, actions, 2003);
+    assert.strictEqual(projectedOnly.nextStateData.players['p1'].x, 7, 'P1 should still move twice');
+    assert(
+      !projectedOnly.events.some((e) => e.type === 'send_points'),
+      'Transfer must not execute using a projected move position'
+    );
+    assert.strictEqual(projectedOnly.nextStateData.players['p1'].points, 4, 'Rejected transfer must not spend points');
+    assert.strictEqual(projectedOnly.nextStateData.players['p2'].points, 6, 'P2 must not receive projected-range points');
+
+    const nearState: GameStateData = JSON.parse(JSON.stringify(state));
+    nearState.players['p2'].x = 7;
+    const inRange = GameEngine.resolveRound(nearState, [actions[0]], 2004);
+    assert(
+      inRange.events.some((e) => e.type === 'send_points'),
+      'Transfer within the current range must execute'
+    );
+    assert.strictEqual(inRange.nextStateData.players['p1'].points, 4, 'In-range transfer spends the requested points');
+    assert.strictEqual(inRange.nextStateData.players['p2'].points, 8, 'P2 receives the transfer and round point');
+    console.log('  Passed: Transfers use current range and ignore projected move range.');
+  }
+
+  // Test 15: Nuclear launches require the exact ready silo selected by the player
+  console.log('\nTest 15: Nuclear Silo Selection And Readiness');
+  {
+    const state: GameStateData = {
+      prioritySeed: 12345,
+      playerPriorityOrder: ['p1', 'p2'],
+      players: {
+        p1: { id: 'p1', username: 'P1', avatarUrl: '', health: 3, points: 2, x: 5, y: 5, isAlive: true, peaceVote: 'no' },
+        p2: { id: 'p2', username: 'P2', avatarUrl: '', health: 5, points: 3, x: 10, y: 10, isAlive: true, peaceVote: 'no' },
+      },
+      buildings: [
+        { id: 'silo-a', type: 'silo', ownerId: 'p1', x: 5, y: 6, health: 1, isArmed: true, isSpent: false },
+        { id: 'silo-b', type: 'silo', ownerId: 'p1', x: 5, y: 7, health: 1, isArmed: true, isSpent: false },
+        { id: 'silo-unarmed', type: 'silo', ownerId: 'p1', x: 5, y: 8, health: 1, isArmed: false, isSpent: false },
+      ],
+    };
+
+    const actions: ActionSubmission[] = [
+      {
+        id: 'a-nuke',
+        gameId: 'g1',
+        day: 1,
+        playerId: 'p1',
+        priorityGroup: 5,
+        data: { actionType: 'launch_nuke', buildingId: 'silo-b', x: 10, y: 10, orderIndex: 0 },
+      },
+    ];
+
+    const result = GameEngine.resolveRound(state, actions, 2005);
+    assert(
+      result.events.some((e) => e.type === 'nuke_launch'),
+      'The exact selected ready silo must launch'
+    );
+    assert.strictEqual(
+      result.nextStateData.buildings.some((b) => b.id === 'silo-b'),
+      false,
+      'The selected silo must be consumed'
+    );
+    assert(
+      result.nextStateData.buildings.some((b) => b.id === 'silo-a'),
+      'Other ready silos must remain untouched'
+    );
+    assert.strictEqual(result.nextStateData.players['p2'].health, 2, 'P2 takes 3 center damage');
+    assert.strictEqual(result.nextStateData.players['p1'].points, 2, 'Launch costs 1 point, then round grant adds 1');
+
+    const unselectedState: GameStateData = JSON.parse(JSON.stringify(state));
+    unselectedState.players['p1'].points = 2;
+    const unselectedActions: ActionSubmission[] = [
+      {
+        id: 'a-unselected',
+        gameId: 'g1',
+        day: 1,
+        playerId: 'p1',
+        priorityGroup: 5,
+        data: { actionType: 'launch_nuke', x: 10, y: 10, orderIndex: 0 },
+      },
+    ];
+    const unselectedResult = GameEngine.resolveRound(unselectedState, unselectedActions, 2006);
+    assert(
+      !unselectedResult.events.some((e) => e.type === 'nuke_launch'),
+      'A generic launch command without a selected silo must not launch'
+    );
+    assert(
+      unselectedResult.events.some((e) => e.type === 'cancelled'),
+      'Launch without a selected silo must be cancelled'
+    );
+    assert.strictEqual(
+      unselectedResult.nextStateData.buildings.length,
+      state.buildings.length,
+      'No silo should be consumed by a generic launch command'
+    );
+    assert.strictEqual(
+      unselectedResult.nextStateData.players['p1'].points,
+      3,
+      'Cancelled launch spends no points'
+    );
+    console.log('  Passed: Nukes require the exact ready silo and consume only that silo.');
+  }
+
+  // Test 16: Point transfer partial execution spends only what is available
+  console.log('\nTest 16: Partial Point Transfers');
+  {
+    const state: GameStateData = {
+      prioritySeed: 12345,
+      playerPriorityOrder: ['p1', 'p2'],
+      players: {
+        p1: { id: 'p1', username: 'P1', avatarUrl: '', health: 3, points: 2, x: 5, y: 5, isAlive: true, peaceVote: 'no' },
+        p2: { id: 'p2', username: 'P2', avatarUrl: '', health: 3, points: 5, x: 6, y: 5, isAlive: true, peaceVote: 'no' },
+      },
+      buildings: [],
+    };
+
+    const partial: ActionSubmission[] = [
+      {
+        id: 'a-send-partial',
+        gameId: 'g1',
+        day: 1,
+        playerId: 'p1',
+        priorityGroup: 1,
+        data: {
+          actionType: 'send_points',
+          targetPlayerId: 'p2',
+          amount: 5,
+          allowPartial: true,
+          orderIndex: 0,
+        },
+      },
+    ];
+
+    const partialResult = GameEngine.resolveRound(state, partial, 3001);
+    const sendEvent = partialResult.events.find((e) => e.type === 'send_points');
+    assert(sendEvent, 'Partial transfer must execute');
+    assert.strictEqual(sendEvent?.amount, 2, 'Partial transfer sends the remaining points');
+    assert.strictEqual(sendEvent?.partial, true, 'Transfer is flagged as partial');
+    assert.strictEqual(partialResult.nextStateData.players['p1'].points, 1, 'P1 spent both points then got +1');
+    assert.strictEqual(partialResult.nextStateData.players['p2'].points, 8, 'P2 received 2 points plus the round grant');
+
+    const strict: ActionSubmission[] = [
+      {
+        ...partial[0],
+        id: 'a-send-strict',
+        data: { ...partial[0].data, allowPartial: false },
+      },
+    ];
+    const strictResult = GameEngine.resolveRound(state, strict, 3002);
+    assert(
+      !strictResult.events.some((e) => e.type === 'send_points'),
+      'Unchecking partial must cancel an unaffordable transfer'
+    );
+    assert.strictEqual(strictResult.nextStateData.players['p1'].points, 3, 'Cancelled transfer spends no points');
+    assert.strictEqual(strictResult.nextStateData.players['p2'].points, 6, 'P2 only receives the round grant');
+    console.log('  Passed: Partial transfers scale down, strict transfers cancel.');
+  }
+
+  // Test 17: Lifetime mine limits include destroyed mines and grow over time
+  console.log('\nTest 17: Lifetime Mine Limits');
+  {
+    const state: GameStateData = {
+      prioritySeed: 12345,
+      playerPriorityOrder: ['p1'],
+      players: {
+        p1: { id: 'p1', username: 'P1', avatarUrl: '', health: 3, points: 5, x: 5, y: 5, isAlive: true, peaceVote: 'no' },
+      },
+      buildings: [],
+      minesPlaced: { p1: 2 },
+    };
+
+    const buildMine = (id: string, x: number, y: number, orderIndex: number): ActionSubmission => ({
+      id,
+      gameId: 'g1',
+      day: 1,
+      playerId: 'p1',
+      priorityGroup: 3,
+      data: { actionType: 'build', buildingType: 'mine', x, y, orderIndex },
+    });
+
+    // Day 9 limit is still 2. Both earlier mines are gone from the map, but
+    // they still count because the lifetime total was persisted.
+    const day9 = GameEngine.resolveRound(
+      state,
+      [buildMine('a-day9', 5, 6, 0)],
+      3003,
+      undefined,
+      undefined,
+      undefined,
+      2,
+      10,
+      9
+    );
+    assert.strictEqual(day9.nextStateData.buildings.length, 0, 'No mine may be built at the Day 9 limit');
+    assert(
+      day9.events.some((e) => e.type === 'cancelled' && e.reason === 'Mine limit reached'),
+      'Over-limit build must be cancelled'
+    );
+    assert.strictEqual(day9.nextStateData.minesPlaced?.['p1'], 2, 'Lifetime count is unchanged by a rejected build');
+
+    // Day 10 raises the limit to 3, so exactly one of two queued mines succeeds.
+    const day10 = GameEngine.resolveRound(
+      state,
+      [buildMine('a-day10-first', 5, 6, 0), buildMine('a-day10-second', 5, 4, 1)],
+      3004,
+      undefined,
+      undefined,
+      undefined,
+      2,
+      10,
+      10
+    );
+    assert.strictEqual(
+      day10.events.filter((e) => e.type === 'build' && e.buildingType === 'mine').length,
+      1,
+      'Day 10 must allow exactly one more mine'
+    );
+    assert.strictEqual(day10.nextStateData.minesPlaced?.['p1'], 3, 'Lifetime count increments only on success');
+    assert.strictEqual(day10.nextStateData.players['p1'].points, 5, 'Only the successful mine costs a point');
+    console.log('  Passed: Mine limits count removed mines and increase on schedule.');
+  }
+
+  // Test 18: Assassination ignores range and uses the configured fixed cost
+  console.log('\nTest 18: Assassination');
+  {
+    const state: GameStateData = {
+      prioritySeed: 12345,
+      playerPriorityOrder: ['p1', 'p2'],
+      players: {
+        p1: { id: 'p1', username: 'P1', avatarUrl: '', health: 3, points: 5, x: 1, y: 1, isAlive: true, peaceVote: 'no' },
+        p2: { id: 'p2', username: 'P2', avatarUrl: '', health: 3, points: 0, x: 25, y: 25, isAlive: true, peaceVote: 'no' },
+      },
+      buildings: [],
+    };
+
+    const actions: ActionSubmission[] = [
+      {
+        id: 'a-assassinate',
+        gameId: 'g1',
+        day: 1,
+        playerId: 'p1',
+        priorityGroup: 5,
+        data: { actionType: 'assassinate', targetPlayerId: 'p2', orderIndex: 0 },
+      },
+    ];
+
+    // Default cost is 3 and the target is far outside any normal attack range.
+    const result = GameEngine.resolveRound(state, actions, 3005, 25);
+    assert(
+      result.events.some((e) => e.type === 'attack' && e.targetPlayerId === 'p2'),
+      'Assassination must execute regardless of distance'
+    );
+    assert.strictEqual(result.nextStateData.players['p2'].health, 2, 'Assassination deals 1 damage');
+    assert.strictEqual(result.nextStateData.players['p1'].points, 3, 'Assassination costs 3 points then grants the round point');
+
+    // Admin-configured cost is respected.
+    const expensive = GameEngine.resolveRound(
+      state,
+      actions,
+      3006,
+      25,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      1,
+      5
+    );
+    assert.strictEqual(expensive.nextStateData.players['p1'].points, 1, 'Configured cost of 5 is deducted');
+    assert.strictEqual(expensive.nextStateData.players['p2'].health, 2, 'Damage is still 1');
+
+    // Cost 0 disables the action entirely.
+    const disabled = GameEngine.resolveRound(
+      state,
+      actions,
+      3007,
+      25,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      1,
+      0
+    );
+    assert(
+      !disabled.events.some((e) => e.type === 'attack'),
+      'Disabled assassination must not deal damage'
+    );
+    assert(
+      disabled.events.some((e) => e.type === 'cancelled'),
+      'Disabled assassination must be cancelled'
+    );
+    assert.strictEqual(disabled.nextStateData.players['p2'].health, 3, 'Disabled assassination leaves health unchanged');
+    assert.strictEqual(disabled.nextStateData.players['p1'].points, 6, 'Disabled assassination spends no points');
+
+    // Unaffordable assassination is cancelled.
+    const poorState: GameStateData = JSON.parse(JSON.stringify(state));
+    poorState.players['p1'].points = 2;
+    const poor = GameEngine.resolveRound(poorState, actions, 3008, 25);
+    assert(
+      !poor.events.some((e) => e.type === 'attack'),
+      'Unaffordable assassination must not execute'
+    );
+    assert.strictEqual(poor.nextStateData.players['p2'].health, 3, 'Unaffordable assassination deals no damage');
+
+    console.log('  Passed: Assassination ignores range, respects cost, and can be disabled.');
+  }
+
+  console.log('\nAll Game Engine tests passed successfully! [18/18]');
 }
 
 runTestSuite();

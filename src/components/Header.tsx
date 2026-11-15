@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import {
   Clock,
   Coins,
+  Gem,
   Heart,
   Crown,
   Handshake,
@@ -11,7 +12,7 @@ import {
   Check,
 } from 'lucide-react';
 import { Player, GameRecord } from '../types/game';
-import { DEFAULT_MAP_SIZE } from '../game/rules';
+import { DEFAULT_MAP_SIZE, DEFAULT_PLAYER_HEALTH } from '../game/rules';
 
 interface HeaderProps {
   game: GameRecord | null;
@@ -33,6 +34,7 @@ export const Header: React.FC<HeaderProps> = ({
   onProfileUpdated,
 }) => {
   const mapSize = game?.mapSize ?? DEFAULT_MAP_SIZE;
+  const maxHealth = game?.playerHealth ?? DEFAULT_PLAYER_HEALTH;
   const isUnstarted = !game || game.currentDay === 0 || game.endReason === 'waiting_to_start';
   const isHistorical = game && !isUnstarted ? viewingDay < game.currentDay : false;
   const isClosed = game?.phase === 'closed';
@@ -196,18 +198,22 @@ export const Header: React.FC<HeaderProps> = ({
                 {/* Health & Points (if in active game) */}
                 {!isUnstarted ? (
                   <div className="flex items-center gap-2 text-[11px] font-mono">
-                    <span className="flex items-center text-red-400" title="Health (Max 3)">
+                    <span className="flex items-center text-red-400" title={`Health (Max ${maxHealth})`}>
                       <Heart className="w-3 h-3 mr-0.5 fill-red-500/30" />
-                      {player.health}/3
+                      {player.health}/{maxHealth}
                     </span>
                     <span className="flex items-center text-amber-300" title="Action Points">
                       <Coins className="w-3 h-3 mr-0.5 fill-amber-500/30" />
                       {player.points} pts
                     </span>
+                    <span className="flex items-center text-cyan-300" title="Persistent Tokens">
+                      <Gem className="w-3 h-3 mr-0.5 fill-cyan-500/20" />
+                      {player.tokens} tokens
+                    </span>
                   </div>
                 ) : (
                   <div className="text-[10px] text-zinc-400 font-mono">
-                    Staged for deployment
+                    Staged for deployment · {player.tokens} tokens
                   </div>
                 )}
               </div>

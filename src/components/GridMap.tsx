@@ -1,7 +1,13 @@
 import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
-import { Maximize2, ZoomIn, ZoomOut, Crosshair, Footprints } from 'lucide-react';
+import { Maximize2, ZoomIn, ZoomOut, Crosshair, Footprints, Eye, EyeOff } from 'lucide-react';
 import { GameStateData, Player, Building, BuildingType, ActionData } from '../types/game';
-import { GAME_RULES, getBankClaimValue, isSquareInPlayerRange } from '../game/rules';
+import {
+  GAME_RULES,
+  DEFAULT_PLAYER_HEALTH,
+  NUKE_BLAST_OFFSETS,
+  getBankClaimValue,
+  isSquareInPlayerRange,
+} from '../game/rules';
 import { ParticleLayer } from './ParticleLayer';
 
 type GridPlayer = GameStateData['players'][string];
@@ -50,6 +56,8 @@ interface GridMapProps {
   currentPlayer: Player | null;
   selectedActionType?: string | null;
   onTileClick: (x: number, y: number) => void;
+  onSelectSilo?: (silo: Building) => void;
+  selectedNukeSiloId?: string | null;
   selectedTile: { x: number; y: number } | null;
   activeFx?: ActiveFx | null;
   isGameOver?: boolean;
@@ -57,9 +65,12 @@ interface GridMapProps {
   showMyRange?: boolean;
   flashTile?: { x: number; y: number; kind: 'valid' | 'invalid' } | null;
   mapSize: number;
+  maxHealth?: number;
   playersOverride?: Record<string, GridPlayer> | null;
   inspectPlayerId?: string | null;
   plannedActions?: ActionData[];
+  isPlayback?: boolean;
+  topInset?: number;
 }
 
 export const GridMap: React.FC<GridMapProps> = ({
@@ -67,6 +78,8 @@ export const GridMap: React.FC<GridMapProps> = ({
   currentPlayer,
   selectedActionType,
   onTileClick,
+  onSelectSilo,
+  selectedNukeSiloId = null,
   selectedTile,
   activeFx,
   isGameOver = false,
@@ -74,15 +87,28 @@ export const GridMap: React.FC<GridMapProps> = ({
   showMyRange = true,
   flashTile = null,
   mapSize,
+  maxHealth = DEFAULT_PLAYER_HEALTH,
   playersOverride = null,
   inspectPlayerId = null,
   plannedActions = [],
+  isPlayback = false,
+  topInset = 0,
 }) => {
   const [zoom, setZoom] = useState(1);
   const [smoothZoom, setSmoothZoom] = useState(true);
+  const [showOwnMines, setShowOwnMines] = useState(true);
   const [hoverCoord, setHoverCoord] = useState<{ x: number; y: number } | null>(null);
   const [hoveredPlayerId, setHoveredPlayerId] = useState<string | null>(null);
+  const [zoomedPlayerId, setZoomedPlayerId] = useState<string | null>(null);
   const [explosions, setExplosions] = useState<Explosion[]>([]);
+
+  useEffect(() => {
+    if (isPlayback) {
+      setHoverCoord(null);
+      setHoveredPlayerId(null);
+      setZoomedPlayerId(null);
+    }
+  }, [isPlayback]);
   const containerRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const zoomRef = useRef(zoom);
@@ -99,11 +125,13 @@ export const GridMap: React.FC<GridMapProps> = ({
   } | null>(null);
   const suppressClickRef = useRef(false);
   const [isPanning, setIsPanning] = useState(false);
+  const hasCenteredRef = useRef(false);
   const explosionIdRef = useRef(0);
   const explosionTimersRef = useRef<number[]>([]);
 
   const GRID_SIZE = mapSize;
   const CELL_SIZE = 36; // px per cell
+  const PAN_MARGIN = 1200;
 
   // Natural (unscaled) grid canvas size: coordinate labels gutter plus board.
   const LABELS_LEFT = 28; // ml-7 column-label gutter (matches row labels 24px + mr-1)
@@ -122,9 +150,18 @@ export const GridMap: React.FC<GridMapProps> = ({
     });
   }
 
+  const hasOwnMines =
+    !!currentPlayer &&
+    !!state?.buildings?.some(
+      (b) => b.type === 'mine' && b.ownerId === currentPlayer.id
+    );
+
   const buildingsByCoord: Record<string, Building[]> = {};
   if (state?.buildings) {
     state.buildings.forEach((b) => {
+      if (b.type === 'mine' && b.ownerId === currentPlayer?.id && !showOwnMines) {
+        return;
+      }
       const key = `${b.x},${b.y}`;
       if (!buildingsByCoord[key]) buildingsByCoord[key] = [];
       buildingsByCoord[key].push(b);
@@ -154,6 +191,7 @@ export const GridMap: React.FC<GridMapProps> = ({
     selectedActionType === 'attack' ||
     selectedActionType === 'build' ||
     selectedActionType === 'send_points';
+  const isGhostRangeAction = selectedActionType === 'attack';
   const isMoveAction = selectedActionType === 'move';
   const isNukeAction = selectedActionType === 'launch_nuke';
   const hasActiveAction = Boolean(selectedActionType);
@@ -205,6 +243,27 @@ export const GridMap: React.FC<GridMapProps> = ({
     container.scrollLeft += curX - anchor.px;
     container.scrollTop += curY - anchor.py;
   }, [zoom]);
+
+  const centerMap = () => {
+    const container = containerRef.current;
+    const wrapper = wrapperRef.current;
+    if (!container || !wrapper) return;
+    const cRect = container.getBoundingClientRect();
+    const wRect = wrapper.getBoundingClientRect();
+    const targetX = container.clientWidth / 2;
+    const targetY = topInset + (container.clientHeight - topInset) / 2;
+    container.scrollLeft += wRect.left - cRect.left + wRect.width / 2 - targetX;
+    container.scrollTop += wRect.top - cRect.top + wRect.height / 2 - targetY;
+  };
+
+  useLayoutEffect(() => {
+    if (hasCenteredRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      centerMap();
+      hasCenteredRef.current = true;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [topInset]);
 
   // Desktop: mouse wheel zooms the map, anchored at the cursor.
   useEffect(() => {
@@ -342,9 +401,12 @@ export const GridMap: React.FC<GridMapProps> = ({
     return isSquareInPlayerRange(actualPlayerPos.x, actualPlayerPos.y, x, y, GRID_SIZE);
   };
 
-  // Check if tile is in the projected 21-tile circular range (from the ghost position)
+  // Only attacks may use the projected 21-tile circular range. Builds and
+  // transfers must resolve from the player's current position.
   const isTileInGhostRange = (x: number, y: number) => {
-    if (!hasActiveAction || !ghostPosition || !currentPlayer?.isAlive) return false;
+    if (!hasActiveAction || !isGhostRangeAction || !ghostPosition || !currentPlayer?.isAlive) {
+      return false;
+    }
     return isSquareInPlayerRange(ghostPosition.x, ghostPosition.y, x, y, GRID_SIZE);
   };
 
@@ -378,42 +440,72 @@ export const GridMap: React.FC<GridMapProps> = ({
     ? Object.values(playerRecord).filter((p) => p.isAlive)
     : [];
 
-  const renderPlayerToken = (tokenPlayer: GridPlayer) => (
-    <div className="relative z-20 flex flex-col items-center group">
-      {/* 1:1 Rounded Square Avatar */}
+  const renderPlayerToken = (tokenPlayer: GridPlayer) => {
+    const isZoomed = !isPlayback && zoomedPlayerId === tokenPlayer.id;
+    const clearZoom = () =>
+      setZoomedPlayerId((cur) => (cur === tokenPlayer.id ? null : cur));
+
+    return (
       <div
-        className={`w-7 h-7 rounded-lg overflow-hidden border bg-zinc-800 relative ${
-          tokenPlayer.id === currentPlayer?.id
-            ? 'border-2 border-amber-400'
-            : 'border-zinc-600'
+        onPointerEnter={(e) => {
+          if (!isPlayback && e.pointerType === 'mouse') {
+            setZoomedPlayerId(tokenPlayer.id);
+          }
+        }}
+        onPointerLeave={(e) => {
+          if (e.pointerType === 'mouse') clearZoom();
+        }}
+        onPointerDown={(e) => {
+          if (!isPlayback && e.pointerType !== 'mouse') {
+            setZoomedPlayerId(tokenPlayer.id);
+          }
+        }}
+        onPointerUp={clearZoom}
+        onPointerCancel={clearZoom}
+        onContextMenu={(e) => e.preventDefault()}
+        className={`relative flex flex-col items-center group origin-center transition-transform duration-150 ease-out ${
+          isZoomed ? 'z-40 scale-[1.6]' : 'z-20'
         }`}
       >
-        <img
-          src={tokenPlayer.avatarUrl}
-          alt={tokenPlayer.username}
-          className="w-full h-full object-cover"
-          draggable={false}
-        />
-      </div>
-
-      {/* Health dots indicator */}
-      <div className="absolute -top-2 flex gap-0.5 bg-zinc-950/90 px-1 py-0.2 rounded-full border border-zinc-800">
-        {Array.from({ length: 3 }).map((_, hIdx) => (
-          <span
-            key={hIdx}
-            className={`w-1.5 h-1.5 rounded-full ${
-              hIdx < tokenPlayer.health ? 'bg-red-500' : 'bg-zinc-700'
-            }`}
+        {/* 1:1 Rounded Square Avatar */}
+        <div
+          className={`w-7 h-7 rounded-lg overflow-hidden border bg-zinc-800 relative ${
+            tokenPlayer.id === currentPlayer?.id
+              ? 'border-2 border-amber-400'
+              : 'border-zinc-600'
+          }`}
+        >
+          <img
+            src={tokenPlayer.avatarUrl}
+            alt={tokenPlayer.username}
+            className="w-full h-full object-cover"
+            draggable={false}
           />
-        ))}
-      </div>
+        </div>
 
-      {/* Username tooltip underneath */}
-      <div className="absolute top-7 pointer-events-none whitespace-nowrap bg-zinc-900/90 text-zinc-200 text-[9px] font-medium px-1.5 py-0.5 rounded shadow border border-zinc-700 opacity-90 group-hover:opacity-100 z-30">
-        {tokenPlayer.username}
+        {/* Health dots indicator */}
+        <div className="absolute -top-2 flex gap-0.5 bg-zinc-950/90 px-1 py-0.2 rounded-full border border-zinc-800">
+          {Array.from({ length: maxHealth }).map((_, hIdx) => (
+            <span
+              key={hIdx}
+              className={`w-1.5 h-1.5 rounded-full ${
+                hIdx < tokenPlayer.health ? 'bg-red-500' : 'bg-zinc-700'
+              }`}
+            />
+          ))}
+        </div>
+
+        {/* Username tooltip underneath */}
+        <div
+          className={`absolute top-7 pointer-events-none whitespace-nowrap bg-zinc-900/90 text-zinc-200 text-[9px] font-medium px-1.5 py-0.5 rounded shadow border border-zinc-700 z-30 transition-opacity ${
+            isZoomed ? 'opacity-100' : 'opacity-90 group-hover:opacity-100'
+          }`}
+        >
+          {tokenPlayer.username}
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   const getCellCenterPx = (x: number, y: number) => {
     return {
@@ -451,7 +543,7 @@ export const GridMap: React.FC<GridMapProps> = ({
               <span className="w-2 h-2 rounded-sm bg-sky-500/70 ring-1 ring-sky-300/60" />
               Current
             </span>
-            {ghostPosition && (
+            {ghostPosition && isGhostRangeAction && (
               <span className="flex items-center gap-1">
                 <span className="w-2 h-2 rounded-sm bg-fuchsia-500/70 ring-1 ring-fuchsia-300/60" />
                 Projected
@@ -485,6 +577,20 @@ export const GridMap: React.FC<GridMapProps> = ({
           >
             <Maximize2 className="w-3.5 h-3.5" />
           </button>
+          {hasOwnMines && (
+            <button
+              onClick={() => setShowOwnMines((cur) => !cur)}
+              className={`p-1 rounded border ${
+                showOwnMines
+                  ? 'bg-zinc-900 border-zinc-700 text-amber-300'
+                  : 'bg-zinc-950 border-zinc-800 text-zinc-500'
+              }`}
+              title={showOwnMines ? 'Hide my mines (screenshot mode)' : 'Show my mines'}
+              aria-pressed={!showOwnMines}
+            >
+              {showOwnMines ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+            </button>
+          )}
         </div>
       </div>
 
@@ -511,11 +617,24 @@ export const GridMap: React.FC<GridMapProps> = ({
         >
           <ZoomOut className="w-4 h-4" />
         </button>
+        {hasOwnMines && (
+          <button
+            onClick={() => setShowOwnMines((cur) => !cur)}
+            className={`p-2 rounded-lg border ${
+              showOwnMines
+                ? 'bg-zinc-900 border-zinc-700 text-amber-300'
+                : 'bg-zinc-950 border-zinc-800 text-zinc-500'
+            }`}
+            title={showOwnMines ? 'Hide my mines (screenshot mode)' : 'Show my mines'}
+            aria-pressed={!showOwnMines}
+          >
+            {showOwnMines ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+          </button>
+        )}
       </div>
 
       {/* Grid Canvas Scrollport: freely scrollable in every direction.
-          The grid centers itself (margin auto) while it fits the viewport and
-          stays fully reachable — including left and up — once zoomed in.
+          Generous margins keep the grid pannable past every edge.
           Desktop pans by dragging and zooms with the mouse wheel. */}
       <div
         ref={containerRef}
@@ -523,16 +642,27 @@ export const GridMap: React.FC<GridMapProps> = ({
         onMouseMove={handleMouseMove}
         onMouseUp={endDrag}
         onMouseLeave={endDrag}
-        className="w-full h-full flex overflow-auto overscroll-contain scrollbar-thin p-3 md:p-6"
+        className="w-full h-full flex overflow-auto overscroll-contain no-scrollbar p-3 md:p-6"
         style={{
           touchAction: 'pan-x pan-y',
-          cursor: hasActiveAction ? undefined : isPanning ? 'grabbing' : 'grab',
+          cursor: isPlayback
+            ? 'default'
+            : hasActiveAction
+            ? undefined
+            : isPanning
+            ? 'grabbing'
+            : 'grab',
+          paddingTop: topInset > 0 ? topInset + 16 : undefined,
         }}
       >
         <div
           ref={wrapperRef}
-          className="m-auto shrink-0 relative"
-          style={{ width: CONTENT_W * zoom, height: CONTENT_H * zoom }}
+          className="shrink-0 relative"
+          style={{
+            width: CONTENT_W * zoom,
+            height: CONTENT_H * zoom,
+            margin: PAN_MARGIN,
+          }}
         >
           <div
             className="absolute top-0 left-0"
@@ -573,7 +703,9 @@ export const GridMap: React.FC<GridMapProps> = ({
 
             {/* 25x25 Board Tiles */}
             <div
-              className="relative grid border border-zinc-800/80 bg-zinc-950/90 shadow-xl"
+              className={`relative grid border border-zinc-800/80 bg-zinc-950/90 shadow-xl ${
+                isPlayback ? 'pointer-events-none' : ''
+              }`}
               style={{
                 gridTemplateColumns: `repeat(${GRID_SIZE}, ${CELL_SIZE}px)`,
                 gridTemplateRows: `repeat(${GRID_SIZE}, ${CELL_SIZE}px)`,
@@ -639,6 +771,23 @@ export const GridMap: React.FC<GridMapProps> = ({
                     onClick={() => {
                       // Ignore clicks that belong to a finished drag-pan.
                       if (suppressClickRef.current) return;
+                      const readyOwnSilo = buildingsOnTile.find(
+                        (b) =>
+                          b.type === 'silo' &&
+                          b.ownerId === currentPlayer?.id &&
+                          b.isArmed &&
+                          !b.isSpent
+                      );
+                      // Clicking one of your ready silos selects it for nuclear
+                      // targeting. This also works from the Attack tab so the
+                      // hint in the action planner is directly actionable.
+                      const canSelectSilo =
+                        !hasActiveAction || selectedActionType === 'attack';
+                      if (canSelectSilo && readyOwnSilo && onSelectSilo) {
+                        setHoverCoord({ x, y });
+                        onSelectSilo(readyOwnSilo);
+                        return;
+                      }
                       if (hasActiveAction && isSelectable) {
                         onTileClick(x, y);
                       } else if (!hasActiveAction) {
@@ -654,10 +803,12 @@ export const GridMap: React.FC<GridMapProps> = ({
                       }
                     }}
                     onMouseEnter={() => {
+                      if (isPlayback) return;
                       setHoverCoord({ x, y });
                       if (playerOnTile) setHoveredPlayerId(playerOnTile.id);
                     }}
                     onMouseLeave={() => {
+                      if (isPlayback) return;
                       if (playerOnTile && hoveredPlayerId === playerOnTile.id) {
                         setHoveredPlayerId(null);
                       }
@@ -706,10 +857,21 @@ export const GridMap: React.FC<GridMapProps> = ({
                         )}
                         {b.type === 'silo' && (
                           <div
+                            title={
+                              b.ownerId === currentPlayer?.id && b.isArmed && !b.isSpent
+                                ? 'READY SILO - click to target a nuke'
+                                : `SILO (HP: ${b.health})`
+                            }
                             className={`p-0.5 rounded border ${
                               b.isArmed
                                 ? 'bg-red-950/90 border-red-500/70'
                                 : 'bg-zinc-900/95 border-zinc-600'
+                            } ${
+                              b.id === selectedNukeSiloId
+                                ? 'ring-2 ring-amber-400 animate-pulse'
+                                : b.ownerId === currentPlayer?.id && b.isArmed && !b.isSpent
+                                  ? 'ring-1 ring-red-400/80'
+                                  : ''
                             }`}
                           >
                             <img
@@ -887,28 +1049,43 @@ export const GridMap: React.FC<GridMapProps> = ({
                   </marker>
                 </defs>
 
-                {/* Planned Nuclear Strikes: dashed 3x3 blast outlines */}
+                {/* Planned Nuclear Strikes: 13-tile blast preview */}
                 {plannedActions
                   .filter((a) => a.actionType === 'launch_nuke')
                   .map((a, i) => {
                     if (a.x === undefined || a.y === undefined) return null;
-                    const left = Math.max(0, (a.x - 2) * CELL_SIZE);
-                    const top = Math.max(0, (a.y - 2) * CELL_SIZE);
-                    const right = Math.min(GRID_SIZE * CELL_SIZE, (a.x + 1) * CELL_SIZE);
-                    const bottom = Math.min(GRID_SIZE * CELL_SIZE, (a.y + 1) * CELL_SIZE);
                     return (
-                      <rect
-                        key={`planned-nuke-${i}`}
-                        x={left}
-                        y={top}
-                        width={Math.max(0, right - left)}
-                        height={Math.max(0, bottom - top)}
-                        fill="rgba(239, 68, 68, 0.12)"
-                        stroke="#ef4444"
-                        strokeWidth="2"
-                        strokeDasharray="4 3"
-                        opacity="0.9"
-                      />
+                      <g key={`planned-nuke-${i}`}>
+                        {NUKE_BLAST_OFFSETS.map(({ dx, dy, damage }, j) => {
+                          const bx = a.x! + dx;
+                          const by = a.y! + dy;
+                          if (bx < 1 || bx > GRID_SIZE || by < 1 || by > GRID_SIZE) {
+                            return null;
+                          }
+                          const left = (bx - 1) * CELL_SIZE;
+                          const top = (by - 1) * CELL_SIZE;
+                          const fill =
+                            damage >= 3
+                              ? 'rgba(239, 68, 68, 0.28)'
+                              : damage === 2
+                                ? 'rgba(239, 68, 68, 0.18)'
+                                : 'rgba(239, 68, 68, 0.1)';
+                          return (
+                            <rect
+                              key={`planned-nuke-${i}-${j}`}
+                              x={left}
+                              y={top}
+                              width={CELL_SIZE}
+                              height={CELL_SIZE}
+                              fill={fill}
+                              stroke="#ef4444"
+                              strokeWidth="1"
+                              strokeDasharray="3 2"
+                              opacity="0.9"
+                            />
+                          );
+                        })}
+                      </g>
                     );
                   })}
 
@@ -1025,44 +1202,49 @@ export const GridMap: React.FC<GridMapProps> = ({
                       </g>
                     )}
 
-                    {/* Nuclear Launch 3x3 Impact Box */}
+                    {/* Nuclear Launch 13-tile Impact Area */}
                     {activeFx.type === 'nuke_launch' && activeFx.toX !== undefined && (
                       <g>
                         {(() => {
                           const targetX = activeFx.toX!;
                           const targetY = activeFx.toY!;
-                          const minX = Math.max(1, targetX - 1);
-                          const minY = Math.max(1, targetY - 1);
-                          const maxX = Math.min(GRID_SIZE, targetX + 1);
-                          const maxY = Math.min(GRID_SIZE, targetY + 1);
-
-                          const rectX = (minX - 1) * CELL_SIZE;
-                          const rectY = (minY - 1) * CELL_SIZE;
-                          const rectW = (maxX - minX + 1) * CELL_SIZE;
-                          const rectH = (maxY - minY + 1) * CELL_SIZE;
-
                           return (
                             <>
-                              <rect
-                                x={rectX}
-                                y={rectY}
-                                width={rectW}
-                                height={rectH}
-                                fill="rgba(239, 68, 68, 0.4)"
-                                stroke="#ef4444"
-                                strokeWidth="3"
-                                strokeDasharray="4 2"
-                              />
+                              {NUKE_BLAST_OFFSETS.map(({ dx, dy, damage }, i) => {
+                                const bx = targetX + dx;
+                                const by = targetY + dy;
+                                if (bx < 1 || bx > GRID_SIZE || by < 1 || by > GRID_SIZE) {
+                                  return null;
+                                }
+                                const fill =
+                                  damage >= 3
+                                    ? 'rgba(239, 68, 68, 0.6)'
+                                    : damage === 2
+                                      ? 'rgba(239, 68, 68, 0.35)'
+                                      : 'rgba(239, 68, 68, 0.18)';
+                                return (
+                                  <rect
+                                    key={`nuke-impact-${i}`}
+                                    x={(bx - 1) * CELL_SIZE}
+                                    y={(by - 1) * CELL_SIZE}
+                                    width={CELL_SIZE}
+                                    height={CELL_SIZE}
+                                    fill={fill}
+                                    stroke="#ef4444"
+                                    strokeWidth="1.5"
+                                  />
+                                );
+                              })}
                               <text
-                                x={rectX + rectW / 2}
-                                y={rectY + rectH / 2}
+                                x={(targetX - 1) * CELL_SIZE + CELL_SIZE / 2}
+                                y={(targetY - 1) * CELL_SIZE + CELL_SIZE / 2}
                                 fill="#fff"
                                 fontSize="14"
                                 fontWeight="black"
                                 textAnchor="middle"
                                 alignmentBaseline="central"
                               >
-                                ☢ NUCLEAR BLAST ☢
+                                NUCLEAR BLAST
                               </text>
                             </>
                           );

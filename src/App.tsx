@@ -6,6 +6,7 @@ import {
   ActionData,
   ActionType,
   GameEngineEvent,
+  Building,
 } from './types/game';
 import { Header } from './components/Header';
 import { DaySelector } from './components/DaySelector';
@@ -18,8 +19,14 @@ import { triggerVictoryConfetti } from './utils/visualEffects';
 import {
   GAME_RULES,
   DEFAULT_MAP_SIZE,
+  DEFAULT_PLAYER_HEALTH,
+  DEFAULT_MINE_LIMIT,
+  DEFAULT_MINE_LIMIT_INCREASE_DAYS,
+  DEFAULT_ASSASSINATION_COST,
   createDefaultBuildingConfig,
   getActionPriorityGroup,
+  getMineLimitForDay,
+  getNextMineLimitIncreaseDay,
   isSquareInPlayerRange,
 } from './game/rules';
 import { Clock, History, ArrowRight, Swords, Users, AlertTriangle } from 'lucide-react';
@@ -54,6 +61,7 @@ export default function App() {
   // Action Planning States
   const [plannedActions, setPlannedActions] = useState<ActionData[]>([]);
   const [selectedActionType, setSelectedActionType] = useState<ActionType | null>(null);
+  const [selectedNukeSiloId, setSelectedNukeSiloId] = useState<string | null>(null);
   const [selectedTile, setSelectedTile] = useState<{ x: number; y: number } | null>(null);
   const [isSavingActions, setIsSavingActions] = useState<boolean>(false);
   const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
@@ -65,6 +73,7 @@ export default function App() {
     allowPartial: true,
     buildingType: 'outpost',
     targetPlayerId: '',
+    assassinationTargetId: '',
   });
   const [flashTile, setFlashTile] = useState<{
     x: number;
@@ -76,6 +85,8 @@ export default function App() {
   const currentStateDayRef = useRef<number>(0);
   const loadStateRequestRef = useRef<number>(0);
   const hasLoadedGameRef = useRef<boolean>(false);
+  const headerRef = useRef<HTMLDivElement>(null);
+  const [headerHeight, setHeaderHeight] = useState<number>(0);
 
   // Animation Playback States
   const [playbackEvents, setPlaybackEvents] = useState<GameEngineEvent[] | null>(null);
@@ -100,6 +111,16 @@ export default function App() {
   useEffect(() => {
     viewingDayRef.current = viewingDay;
   }, [viewingDay]);
+
+  useEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    const updateHeight = () => setHeaderHeight(el.getBoundingClientRect().height);
+    updateHeight();
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   // 1. Initial Load & Invitation check
   useEffect(() => {
@@ -255,8 +276,14 @@ export default function App() {
   // Any day change starts a fresh planning selection.
   useEffect(() => {
     setSelectedActionType(null);
+    setSelectedNukeSiloId(null);
     setSelectedTile(null);
   }, [viewingDay]);
+
+  // Nuclear targeting only exists while a specific ready silo is selected.
+  useEffect(() => {
+    if (selectedActionType !== 'launch_nuke') setSelectedNukeSiloId(null);
+  }, [selectedActionType]);
 
   // The closed phase always starts on the timer screen; inspection is opt-in.
   useEffect(() => {
@@ -264,6 +291,16 @@ export default function App() {
     setSelectedTile(null);
     setIsInspectingClosedPhase(false);
   }, [game?.phase, game?.currentDay]);
+
+  // Refresh the persistent token balance when a game finishes.
+  const previousPhaseRef = useRef<string | null>(null);
+  useEffect(() => {
+    const phase = game?.phase ?? null;
+    if (phase === 'over' && previousPhaseRef.current !== 'over') {
+      loadMe();
+    }
+    previousPhaseRef.current = phase;
+  }, [game?.phase]);
 
   // Timer Tick & Poll
   useEffect(() => {
@@ -304,6 +341,17 @@ export default function App() {
   }, [allPlayers, currentState]);
 
   const mapSize = game?.mapSize ?? DEFAULT_MAP_SIZE;
+  const maxHealth = game?.playerHealth ?? DEFAULT_PLAYER_HEALTH;
+  const mineLimit = getMineLimitForDay(
+    game?.mineLimit ?? DEFAULT_MINE_LIMIT,
+    viewingDay,
+    game?.mineLimitIncreaseDays ?? DEFAULT_MINE_LIMIT_INCREASE_DAYS
+  );
+  const nextMineLimitDay = getNextMineLimitIncreaseDay(
+    viewingDay,
+    game?.mineLimitIncreaseDays ?? DEFAULT_MINE_LIMIT_INCREASE_DAYS
+  );
+  const minesPlaced = currentState?.minesPlaced?.[activePlayer?.id ?? ''] ?? 0;
 
   // Compute Ghost Operative Position based on queued movement actions
   const ghostPosition = useMemo(() => {
@@ -335,6 +383,9 @@ export default function App() {
     !!currentState &&
     !isAnimating;
 
+  const isViewingHistoricalDay =
+    !!game && game.currentDay > 0 && viewingDay !== game.currentDay;
+
   // True when the local plan differs from what is stored on the server.
   const hasUnsavedChanges =
     canPlanActions && canonicalActionsJson(plannedActions) !== savedActionsJson;
@@ -347,6 +398,12 @@ export default function App() {
       setSelectedTile(null);
     }
   }, [canPlanActions]);
+
+  useEffect(() => {
+    if (isViewingHistoricalDay) {
+      setMobileSheet((cur) => (cur === 'plan' ? null : cur));
+    }
+  }, [isViewingHistoricalDay]);
 
   const activeActionType = canPlanActions ? selectedActionType : null;
   const showActionRange = canPlanActions && activeActionType !== null;
@@ -379,14 +436,23 @@ export default function App() {
         affected.health = Math.max(0, affected.health - (evt.damage || 0));
         if (affected.health <= 0) affected.isAlive = false;
       } else if (evt.type === 'heal' && affected) {
-        affected.health = Math.min(GAME_RULES.MAX_HEALTH, affected.health + (evt.amount || 0));
+        affected.health = Math.min(
+          game?.playerHealth ?? DEFAULT_PLAYER_HEALTH,
+          affected.health + (evt.amount || 0)
+        );
       } else if (evt.type === 'death' && affected) {
         affected.isAlive = false;
       }
     }
 
     return players;
-  }, [isAnimating, playbackBasePlayers, playbackEvents, playbackEventIndex]);
+  }, [
+    isAnimating,
+    playbackBasePlayers,
+    playbackEvents,
+    playbackEventIndex,
+    game?.playerHealth,
+  ]);
 
   const flashTileAt = useCallback((x: number, y: number, kind: 'valid' | 'invalid') => {
     setFlashTile({ x, y, kind });
@@ -428,6 +494,27 @@ export default function App() {
   const queueAction = (act: ActionData) => {
     setPlannedActions((prev) => [...prev, act]);
     setSaveSuccess(false);
+  };
+
+  const handleSelectNukeSilo = (silo: Building) => {
+    const p = activePlayer;
+    if (
+      !canPlanActions ||
+      !p?.isAlive ||
+      !game?.enabledBuildings.silo ||
+      silo.type !== 'silo' ||
+      silo.ownerId !== p.id ||
+      !silo.isArmed ||
+      silo.isSpent
+    ) {
+      flashTileAt(silo.x, silo.y, 'invalid');
+      return;
+    }
+
+    setSelectedNukeSiloId(silo.id);
+    setSelectedActionType('launch_nuke');
+    setSelectedTile(null);
+    flashTileAt(silo.x, silo.y, 'valid');
   };
 
   const handleTileClick = (x: number, y: number) => {
@@ -496,9 +583,19 @@ export default function App() {
     }
 
     if (selectedActionType === 'build') {
-      if (!inRange || !game?.enabledBuildings[actionConfig.buildingType]) {
+      if (!inCurrentRange || !game?.enabledBuildings[actionConfig.buildingType]) {
         flashTileAt(x, y, 'invalid');
         return;
+      }
+
+      if (actionConfig.buildingType === 'mine') {
+        const plannedMines = plannedActions.filter(
+          (act) => act.actionType === 'build' && act.buildingType === 'mine'
+        ).length;
+        if (minesPlaced + plannedMines >= mineLimit) {
+          flashTileAt(x, y, 'invalid');
+          return;
+        }
       }
 
       const ownBank = game?.enabledBuildings.bank
@@ -534,7 +631,7 @@ export default function App() {
     }
 
     if (selectedActionType === 'send_points') {
-      if (!inRange) {
+      if (!inCurrentRange) {
         flashTileAt(x, y, 'invalid');
         return;
       }
@@ -558,9 +655,14 @@ export default function App() {
     }
 
     if (selectedActionType === 'launch_nuke') {
-      const silo = game?.enabledBuildings.silo
+      const silo = selectedNukeSiloId
         ? dayBuildings.find(
-            (b) => b.type === 'silo' && b.ownerId === p.id && b.isArmed && !b.isSpent
+            (b) =>
+              b.id === selectedNukeSiloId &&
+              b.type === 'silo' &&
+              b.ownerId === p.id &&
+              b.isArmed &&
+              !b.isSpent
           )
         : undefined;
       if (!silo) {
@@ -569,6 +671,8 @@ export default function App() {
       }
       setSelectedTile({ x, y });
       queueAction({ actionType: 'launch_nuke', buildingId: silo.id, x, y });
+      setSelectedActionType(null);
+      setSelectedNukeSiloId(null);
       flashTileAt(x, y, 'valid');
       return;
     }
@@ -669,7 +773,14 @@ export default function App() {
       if (!res.ok) throw new Error(`Failed to load Day ${nextDay} state`);
       const data = await res.json();
       if (!data.state) throw new Error(`Day ${nextDay} state missing`);
-      const events: GameEngineEvent[] = data.state.events || [];
+      const rawEvents: GameEngineEvent[] = data.state.events || [];
+      // While a game is still running, other players' mine placements stay
+      // hidden during replay. Finished games reveal the full timeline.
+      const events = rawEvents.filter((evt) => {
+        const isMineBuild = evt.type === 'build' && evt.buildingType === 'mine';
+        if (!isMineBuild) return true;
+        return game?.phase === 'over' || evt.playerId === player?.id;
+      });
 
       setPlaybackEvents(events);
       setPlaybackTargetDay(nextDay);
@@ -719,7 +830,12 @@ export default function App() {
 
   const handleAdminStartGame = async (config?: {
     mapSize: number;
+    playerHealth: number;
+    rewardPool: number;
     enabledBuildings: Record<string, boolean>;
+    mineLimit: number;
+    mineLimitIncreaseDays: number;
+    assassinationCost: number;
   }) => {
     setIsProcessingRound(true);
     try {
@@ -766,6 +882,72 @@ export default function App() {
     }
   };
 
+  const handleAdminUpdateRewardPool = async (rewardPool: number) => {
+    setIsProcessingRound(true);
+    try {
+      const res = await fetch('/api/admin/game/reward-pool', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rewardPool }),
+      });
+      const data = await res.json();
+      if (res.ok && data.game) {
+        setGame(data.game);
+      } else {
+        alert(data.error || 'Failed to update reward pool');
+      }
+    } catch (err: any) {
+      alert(err.message || 'Error updating reward pool');
+    } finally {
+      setIsProcessingRound(false);
+    }
+  };
+
+  const handleAdminUpdateMineRules = async (
+    mineLimit: number,
+    mineLimitIncreaseDays: number
+  ) => {
+    setIsProcessingRound(true);
+    try {
+      const res = await fetch('/api/admin/game/mine-rules', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mineLimit, mineLimitIncreaseDays }),
+      });
+      const data = await res.json();
+      if (res.ok && data.game) {
+        setGame(data.game);
+      } else {
+        alert(data.error || 'Failed to update mine rules');
+      }
+    } catch (err: any) {
+      alert(err.message || 'Error updating mine rules');
+    } finally {
+      setIsProcessingRound(false);
+    }
+  };
+
+  const handleAdminUpdateAssassinationCost = async (assassinationCost: number) => {
+    setIsProcessingRound(true);
+    try {
+      const res = await fetch('/api/admin/game/assassination-cost', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assassinationCost }),
+      });
+      const data = await res.json();
+      if (res.ok && data.game) {
+        setGame(data.game);
+      } else {
+        alert(data.error || 'Failed to update assassination cost');
+      }
+    } catch (err: any) {
+      alert(err.message || 'Error updating assassination cost');
+    } finally {
+      setIsProcessingRound(false);
+    }
+  };
+
   const handleAdminResolveDay = async () => {
     setIsProcessingRound(true);
     try {
@@ -779,6 +961,27 @@ export default function App() {
       }
     } catch (err: any) {
       alert(err.message || 'Error resolving current day');
+    } finally {
+      setIsProcessingRound(false);
+    }
+  };
+
+  const handleAdminEndGameWorldPeace = async () => {
+    setIsProcessingRound(true);
+    try {
+      const res = await fetch('/api/admin/end-game-world-peace', {
+        method: 'POST',
+      });
+      const data = await res.json();
+      if (res.ok) {
+        await loadMe();
+        await loadGameCurrent();
+        setIsAdminOpen(false);
+      } else {
+        alert(data.error || 'Failed to end the game');
+      }
+    } catch (err: any) {
+      alert(err.message || 'Error ending the game');
     } finally {
       setIsProcessingRound(false);
     }
@@ -827,6 +1030,8 @@ export default function App() {
           currentPlayer={activePlayer}
           selectedActionType={activeActionType}
           onTileClick={handleTileClick}
+          onSelectSilo={handleSelectNukeSilo}
+          selectedNukeSiloId={selectedNukeSiloId}
           selectedTile={showActionRange ? selectedTile : null}
           activeFx={activeFx}
           isGameOver={isGameOver}
@@ -834,9 +1039,12 @@ export default function App() {
           showMyRange={showActionRange}
           flashTile={flashTile}
           mapSize={mapSize}
+          maxHealth={maxHealth}
           playersOverride={isAnimating ? animationPlayers : null}
           inspectPlayerId={hoveredPlayerId}
           plannedActions={canPlanActions ? plannedActions : []}
+          isPlayback={isAnimating}
+          topInset={isAnimating ? 0 : headerHeight}
         />
       </div>
 
@@ -928,12 +1136,12 @@ export default function App() {
         }`}
       >
         {/* Top Header Bar */}
-        <div className="pointer-events-auto">
+        <div ref={headerRef} className="pointer-events-auto">
           <Header
             game={game}
             secondsRemaining={secondsRemaining}
             viewingDay={viewingDay}
-            player={player}
+            player={activePlayer}
             onTogglePeaceVote={handleTogglePeaceVote}
             onOpenAdmin={() => setIsAdminOpen(true)}
             onProfileUpdated={loadMe}
@@ -969,6 +1177,14 @@ export default function App() {
             {/* Bottom-Left: Floating Action Deck (only in active match) */}
             <div className="pointer-events-auto max-w-md w-full">
               {!isUnstarted ? (
+                isViewingHistoricalDay ? (
+                  <div className="bg-zinc-950/80 backdrop-blur-md border border-zinc-800 rounded-2xl p-4 text-xs text-zinc-400">
+                    <p className="font-semibold text-zinc-300 mb-1">
+                      Viewing Day {viewingDay} Archive
+                    </p>
+                    <p>Actions can only be planned for the live day (Day {game?.currentDay}).</p>
+                  </div>
+                ) : (
                 <ActionPlanner
                   player={activePlayer}
                   allPlayers={rosterPlayers}
@@ -993,7 +1209,14 @@ export default function App() {
                   saveSuccess={saveSuccess}
                   ghostPosition={effectiveGhostPosition}
                   enabledBuildings={game?.enabledBuildings ?? createDefaultBuildingConfig()}
+                  mapSize={mapSize}
+                  selectedNukeSiloId={selectedNukeSiloId}
+                  mineLimit={mineLimit}
+                  minesPlaced={minesPlaced}
+                  nextMineLimitDay={nextMineLimitDay}
+                  assassinationCost={game?.assassinationCost ?? DEFAULT_ASSASSINATION_COST}
                 />
+                )
               ) : (
                 <div className="bg-zinc-950/80 backdrop-blur-md border border-zinc-800 rounded-2xl p-4 text-xs text-zinc-400">
                   <p className="font-semibold text-zinc-300 mb-1">Staging Area</p>
@@ -1044,31 +1267,47 @@ export default function App() {
           {/* Sheet content */}
           {mobileSheet === 'plan' &&
             (!isUnstarted ? (
-              <ActionPlanner
-                player={activePlayer}
-                allPlayers={rosterPlayers}
-                buildings={currentState?.buildings || []}
-                selectedTile={selectedTile}
-                actions={plannedActions}
-                actionConfig={actionConfig}
-                onActionConfigChange={(patch) =>
-                  setActionConfig((cfg) => ({ ...cfg, ...patch }))
-                }
-                onAddAction={queueAction}
-                onRemoveAction={handleRemoveAction}
-                onSubmitActions={handleSubmitActions}
-                onSelectActionType={(actType) => {
-                  if (!canPlanActions) return;
-                  setSelectedActionType(actType);
-                  setSelectedTile(null);
-                }}
-                selectedActionType={activeActionType}
-                isClosed={!canPlanActions}
-                isSaving={isSavingActions}
-                saveSuccess={saveSuccess}
-                ghostPosition={effectiveGhostPosition}
-                enabledBuildings={game?.enabledBuildings ?? createDefaultBuildingConfig()}
-              />
+              isViewingHistoricalDay ? (
+                <div className="bg-zinc-950/90 backdrop-blur-md border border-zinc-800 rounded-2xl p-3 text-xs text-zinc-400">
+                  <p className="font-semibold text-zinc-300 mb-1">
+                    Viewing Day {viewingDay} Archive
+                  </p>
+                  <p>Actions can only be planned for the live day (Day {game?.currentDay}).</p>
+                </div>
+              ) : (
+                <ActionPlanner
+                  player={activePlayer}
+                  allPlayers={rosterPlayers}
+                  buildings={currentState?.buildings || []}
+                  selectedTile={selectedTile}
+                  actions={plannedActions}
+                  actionConfig={actionConfig}
+                  onActionConfigChange={(patch) =>
+                    setActionConfig((cfg) => ({ ...cfg, ...patch }))
+                  }
+                  onAddAction={queueAction}
+                  onRemoveAction={handleRemoveAction}
+                  onSubmitActions={handleSubmitActions}
+                  onSelectActionType={(actType) => {
+                    if (!canPlanActions) return;
+                    setSelectedActionType(actType);
+                    setSelectedTile(null);
+                  }}
+                  selectedActionType={activeActionType}
+                  isClosed={!canPlanActions}
+                  isSaving={isSavingActions}
+                  saveSuccess={saveSuccess}
+                  ghostPosition={effectiveGhostPosition}
+                  enabledBuildings={game?.enabledBuildings ?? createDefaultBuildingConfig()}
+                  maxHealth={maxHealth}
+                  mapSize={mapSize}
+                  selectedNukeSiloId={selectedNukeSiloId}
+                  mineLimit={mineLimit}
+                  minesPlaced={minesPlaced}
+                  nextMineLimitDay={nextMineLimitDay}
+                  assassinationCost={game?.assassinationCost ?? DEFAULT_ASSASSINATION_COST}
+                />
+              )
             ) : (
               <div className="bg-zinc-950/90 backdrop-blur-md border border-zinc-800 rounded-2xl p-3 text-xs text-zinc-400">
                 <p className="font-semibold text-zinc-300 mb-1">Staging Area</p>
@@ -1083,6 +1322,7 @@ export default function App() {
               currentPlayerId={player?.id}
               inspectedPlayerId={hoveredPlayerId}
               onHoverPlayer={(id) => setHoveredPlayerId(id)}
+              maxHealth={maxHealth}
             />
           )}
 
@@ -1106,7 +1346,8 @@ export default function App() {
           <div className="flex gap-2">
             <button
               onClick={() => setMobileSheet((cur) => (cur === 'plan' ? null : 'plan'))}
-              className={`flex-1 min-h-11 rounded-xl border flex items-center justify-center gap-1.5 text-xs font-bold uppercase tracking-wider ${
+              disabled={isViewingHistoricalDay}
+              className={`flex-1 min-h-11 rounded-xl border flex items-center justify-center gap-1.5 text-xs font-bold uppercase tracking-wider disabled:opacity-40 disabled:cursor-not-allowed ${
                 mobileSheet === 'plan'
                   ? 'bg-amber-600 border-amber-600 text-zinc-950'
                   : 'bg-zinc-900 border-zinc-700 text-zinc-200'
@@ -1114,7 +1355,7 @@ export default function App() {
             >
               <Swords className="w-4 h-4" />
               Plan
-              {plannedActions.length > 0 && (
+              {plannedActions.length > 0 && !isViewingHistoricalDay && (
                 <span
                   className={`ml-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-mono ${
                     mobileSheet === 'plan' ? 'bg-zinc-950/20 text-zinc-950' : 'bg-amber-500 text-zinc-950'
@@ -1161,6 +1402,10 @@ export default function App() {
         onResetGame={handleAdminResetGame}
         onStartGame={handleAdminStartGame}
         onToggleBuilding={handleAdminToggleBuilding}
+        onUpdateRewardPool={handleAdminUpdateRewardPool}
+        onUpdateMineRules={handleAdminUpdateMineRules}
+        onUpdateAssassinationCost={handleAdminUpdateAssassinationCost}
+        onEndGameWorldPeace={handleAdminEndGameWorldPeace}
         isProcessing={isProcessingRound}
       />
     </div>

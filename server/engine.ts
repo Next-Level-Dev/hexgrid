@@ -15,9 +15,15 @@ import {
   GAME_RULES,
   MIN_COORD,
   DEFAULT_MAP_SIZE,
+  DEFAULT_MINE_LIMIT,
+  DEFAULT_MINE_LIMIT_INCREASE_DAYS,
+  DEFAULT_ASSASSINATION_COST,
+  ASSASSINATION_DAMAGE,
   createDefaultBuildingConfig,
   getActionPriorityGroup,
   getFixedActionCost,
+  getMineLimitForDay,
+  NUKE_BLAST_OFFSETS,
   isSquareInPlayerRange,
   deterministicShuffle,
 } from '../src/game/rules';
@@ -37,9 +43,25 @@ export class GameEngine {
     actions: ActionSubmission[],
     nextPrioritySeed: number,
     mapSize: number = DEFAULT_MAP_SIZE,
-    enabledBuildings: Record<BuildingType, boolean> = createDefaultBuildingConfig()
+    enabledBuildings: Record<BuildingType, boolean> = createDefaultBuildingConfig(),
+    maxHealth: number = GAME_RULES.MAX_HEALTH,
+    mineLimit: number = DEFAULT_MINE_LIMIT,
+    mineLimitIncreaseDays: number = DEFAULT_MINE_LIMIT_INCREASE_DAYS,
+    roundDay: number = 1,
+    assassinationCost: number = DEFAULT_ASSASSINATION_COST
   ): ResolutionResult {
     const events: GameEngineEvent[] = [];
+    const currentMineLimit = getMineLimitForDay(
+      mineLimit,
+      roundDay,
+      mineLimitIncreaseDays
+    );
+    const minesPlaced: Record<string, number> = {
+      ...(currentState.minesPlaced ?? {}),
+    };
+    for (const playerId of Object.keys(currentState.players)) {
+      minesPlaced[playerId] = minesPlaced[playerId] ?? 0;
+    }
 
     // Deep clone players and buildings
     const players: GameStateData['players'] = JSON.parse(
@@ -86,38 +108,15 @@ export class GameEngine {
       return orderA - orderB;
     });
 
-    // Project each player's position after their queued movement. This lets
-    // range-limited actions that resolve before movement (transfer/build/claim)
-    // be planned from the ghost position, matching the client's dual-range UI.
-    const projectedPositions = new Map<string, { x: number; y: number }>();
-    for (const [pid, p] of Object.entries(players)) {
-      projectedPositions.set(pid, { x: p.x, y: p.y });
-    }
-    for (const act of sortedActions) {
-      if (act.data.actionType !== 'move') continue;
-      const pos = projectedPositions.get(act.playerId);
-      if (!pos) continue;
-      const dir = act.data.direction;
-      if (dir === 'up' && pos.y > MIN_COORD) pos.y -= 1;
-      else if (dir === 'down' && pos.y < mapSize) pos.y += 1;
-      else if (dir === 'left' && pos.x > MIN_COORD) pos.x -= 1;
-      else if (dir === 'right' && pos.x < mapSize) pos.x += 1;
-    }
-
-    // Accept targets in either the player's current reach or projected reach.
-    const isInActionReach = (
-      playerId: string,
+    // Buildings and transfers resolve from the player's current position.
+    // Only attacks may use the projected (ghost) position, because movement
+    // happens before priority 5.
+    const isInCurrentReach = (
       currentX: number,
       currentY: number,
       targetX: number,
       targetY: number
-    ) => {
-      if (isSquareInPlayerRange(currentX, currentY, targetX, targetY, mapSize)) return true;
-      const projected = projectedPositions.get(playerId);
-      if (!projected) return false;
-      if (projected.x === currentX && projected.y === currentY) return false;
-      return isSquareInPlayerRange(projected.x, projected.y, targetX, targetY, mapSize);
-    };
+    ) => isSquareInPlayerRange(currentX, currentY, targetX, targetY, mapSize);
 
     // Helper functions
     const isOccupiedByLivingPlayer = (x: number, y: number, excludePlayerId?: string) => {
@@ -181,7 +180,11 @@ export class GameEngine {
         continue;
       }
 
-      const fixedCost = getFixedActionCost(actionType, act.data.buildingType);
+      const fixedCost = getFixedActionCost(
+        actionType,
+        act.data.buildingType,
+        assassinationCost
+      );
 
       // Point Validation
       if (fixedCost !== null) {
@@ -233,13 +236,13 @@ export class GameEngine {
           continue;
         }
 
-        if (!isInActionReach(actor.id, actor.x, actor.y, target.x, target.y)) {
+        if (!isSquareInPlayerRange(actor.x, actor.y, target.x, target.y, mapSize)) {
           events.push({
             id: uuidv4(),
             type: 'cancelled',
             playerId: actor.id,
-            reason: 'Target out of circular range (5x5 excluding corners/self)',
-            description: `${actor.username}'s point transfer cancelled: target is out of 21-square circular range`,
+            reason: 'Target out of current circular range (5x5 excluding corners/self)',
+            description: `${actor.username}'s point transfer cancelled: target must be within the current 21-square circular range because transfers resolve before movement`,
           });
           continue;
         }
@@ -263,18 +266,18 @@ export class GameEngine {
 
       // --- Priority 2: HEAL ---
       else if (actionType === 'heal') {
-        if (actor.health >= GAME_RULES.MAX_HEALTH) {
+        if (actor.health >= maxHealth) {
           events.push({
             id: uuidv4(),
             type: 'cancelled',
             playerId: actor.id,
             reason: 'Already at maximum health',
-            description: `${actor.username} is already at full health (3/3)`,
+            description: `${actor.username} is already at full health (${maxHealth}/${maxHealth})`,
           });
           continue;
         }
 
-        const maxHealAllowed = GAME_RULES.MAX_HEALTH - actor.health;
+        const maxHealAllowed = maxHealth - actor.health;
         const healthRestored = Math.min(paidPoints, maxHealAllowed);
         // Deduct points used for health
         actor.points -= healthRestored;
@@ -287,7 +290,7 @@ export class GameEngine {
           fromX: actor.x,
           fromY: actor.y,
           amount: healthRestored,
-          description: `${actor.username} converted ${healthRestored} pt(s) into +${healthRestored} health (${actor.health}/3)`,
+          description: `${actor.username} converted ${healthRestored} pt(s) into +${healthRestored} health (${actor.health}/${maxHealth})`,
         });
       }
 
@@ -325,8 +328,9 @@ export class GameEngine {
           continue;
         }
 
-        // Validate circular range (current or projected ghost position)
-        if (!isInActionReach(actor.id, actor.x, actor.y, targetX, targetY)) {
+        // Validate circular range from the current position (builds resolve
+        // before movement and may not use the projected ghost position)
+        if (!isInCurrentReach(actor.x, actor.y, targetX, targetY)) {
           events.push({
             id: uuidv4(),
             type: 'cancelled',
@@ -361,6 +365,22 @@ export class GameEngine {
           continue;
         }
 
+        // Mines are limited per player for the whole game. Detonated or
+        // destroyed mines still count toward this lifetime total.
+        if (bType === 'mine') {
+          const used = minesPlaced[actor.id] ?? 0;
+          if (used >= currentMineLimit) {
+            events.push({
+              id: uuidv4(),
+              type: 'cancelled',
+              playerId: actor.id,
+              reason: 'Mine limit reached',
+              description: `${actor.username} has reached the mine limit (${used}/${currentMineLimit}) for Day ${roundDay}`,
+            });
+            continue;
+          }
+        }
+
         const cost = GAME_RULES.BUILDINGS[bType].cost;
         actor.points -= cost;
 
@@ -375,6 +395,9 @@ export class GameEngine {
           value: bType === 'bank' ? GAME_RULES.BUILDINGS.bank.initialValue : undefined,
         };
         buildings.push(newBuilding);
+        if (bType === 'mine') {
+          minesPlaced[actor.id] = (minesPlaced[actor.id] ?? 0) + 1;
+        }
 
         events.push({
           id: uuidv4(),
@@ -412,7 +435,7 @@ export class GameEngine {
           continue;
         }
 
-        if (!isInActionReach(actor.id, actor.x, actor.y, bank.x, bank.y)) {
+        if (!isInCurrentReach(actor.x, actor.y, bank.x, bank.y)) {
           events.push({
             id: uuidv4(),
             type: 'cancelled',
@@ -550,6 +573,63 @@ export class GameEngine {
         }
       }
 
+      // --- Priority 5: ASSASSINATE ---
+      else if (actionType === 'assassinate') {
+        if (assassinationCost <= 0) {
+          events.push({
+            id: uuidv4(),
+            type: 'cancelled',
+            playerId: actor.id,
+            reason: 'Assassination is disabled',
+            description: `${actor.username}'s assassination was cancelled: the action is disabled in this game`,
+          });
+          continue;
+        }
+
+        const targetId = act.data.targetPlayerId;
+        const target = targetId ? players[targetId] : null;
+
+        if (!target || !target.isAlive || target.id === actor.id) {
+          events.push({
+            id: uuidv4(),
+            type: 'cancelled',
+            playerId: actor.id,
+            reason: 'Assassination target unavailable',
+            description: `${actor.username}'s assassination was cancelled: target is unavailable`,
+          });
+          continue;
+        }
+
+        actor.points -= assassinationCost;
+        target.health = Math.max(0, target.health - ASSASSINATION_DAMAGE);
+
+        events.push({
+          id: uuidv4(),
+          type: 'attack',
+          playerId: actor.id,
+          targetPlayerId: target.id,
+          fromX: actor.x,
+          fromY: actor.y,
+          toX: target.x,
+          toY: target.y,
+          amount: assassinationCost,
+          damage: ASSASSINATION_DAMAGE,
+          description: `${actor.username} assassinated ${target.username} for ${ASSASSINATION_DAMAGE} damage (${assassinationCost} pt)`,
+        });
+        events.push({
+          id: uuidv4(),
+          type: 'damage',
+          playerId: target.id,
+          fromX: target.x,
+          fromY: target.y,
+          damage: ASSASSINATION_DAMAGE,
+          description: `${target.username} sustained ${ASSASSINATION_DAMAGE} damage (${target.health}/${maxHealth} HP remaining)`,
+        });
+        if (target.health <= 0) {
+          recordDeath(target, `assassinated by ${actor.username}`);
+        }
+      }
+
       // --- Priority 5: ATTACK ---
       else if (actionType === 'attack') {
         const targetX = act.data.x;
@@ -607,7 +687,7 @@ export class GameEngine {
               fromX: targetX,
               fromY: targetY,
               damage,
-              description: `${p.username} sustained ${damage} damage (${p.health}/3 HP remaining)`,
+              description: `${p.username} sustained ${damage} damage (${p.health}/${maxHealth} HP remaining)`,
             });
             if (p.health <= 0) {
               recordDeath(p, `struck by ${actor.username}'s attack`);
@@ -638,17 +718,22 @@ export class GameEngine {
 
       // --- Priority 5: NUCLEAR LAUNCH ---
       else if (actionType === 'launch_nuke') {
-        const silo = buildings.find(
-          (b) => b.type === 'silo' && b.ownerId === actor.id && b.isArmed && !b.isSpent
-        );
+        const siloId = act.data.buildingId;
+        const silo = siloId ? buildings.find((b) => b.id === siloId) : undefined;
 
-        if (!silo) {
+        if (
+          !silo ||
+          silo.type !== 'silo' ||
+          silo.ownerId !== actor.id ||
+          !silo.isArmed ||
+          silo.isSpent
+        ) {
           events.push({
             id: uuidv4(),
             type: 'cancelled',
             playerId: actor.id,
-            reason: 'No armed nuclear silo available',
-            description: `${actor.username} has no armed nuclear silo ready for launch`,
+            reason: 'Selected nuclear silo is not ready',
+            description: `${actor.username}'s nuclear launch cancelled: the selected silo is missing, unarmed, spent, or not owned by the player`,
           });
           continue;
         }
@@ -662,6 +747,24 @@ export class GameEngine {
             playerId: actor.id,
             reason: 'Target coordinate not specified',
             description: `${actor.username}'s nuclear strike target was missing`,
+          });
+          continue;
+        }
+
+        if (
+          !Number.isInteger(targetX) ||
+          !Number.isInteger(targetY) ||
+          targetX < MIN_COORD ||
+          targetX > mapSize ||
+          targetY < MIN_COORD ||
+          targetY > mapSize
+        ) {
+          events.push({
+            id: uuidv4(),
+            type: 'cancelled',
+            playerId: actor.id,
+            reason: 'Target coordinate out of map bounds',
+            description: `${actor.username}'s nuclear strike target (${targetX}, ${targetY}) is outside the map`,
           });
           continue;
         }
@@ -681,61 +784,54 @@ export class GameEngine {
           description: `TACTICAL NUKE LAUNCHED by ${actor.username} targeting (${targetX}, ${targetY})!`,
         });
 
-        // 3x3 Blast Radius
-        for (let dx = -1; dx <= 1; dx++) {
-          for (let dy = -1; dy <= 1; dy++) {
-            const bx = targetX + dx;
-            const by = targetY + dy;
-            if (
-              bx < MIN_COORD ||
-              bx > mapSize ||
-              by < MIN_COORD ||
-              by > mapSize
-            ) {
-              continue;
-            }
+        // 13-tile blast: 3x3 core plus the four cardinal tips.
+        for (const { dx, dy, damage: blastDamage } of NUKE_BLAST_OFFSETS) {
+          const bx = targetX + dx;
+          const by = targetY + dy;
+          if (
+            bx < MIN_COORD ||
+            bx > mapSize ||
+            by < MIN_COORD ||
+            by > mapSize
+          ) {
+            continue;
+          }
 
-            const isCenter = dx === 0 && dy === 0;
-            const blastDamage = isCenter
-              ? GAME_RULES.BUILDINGS.silo.centerDamage
-              : GAME_RULES.BUILDINGS.silo.surroundDamage;
-
-            // Damage players in blast
-            for (const p of Object.values(players)) {
-              if (p.isAlive && p.x === bx && p.y === by) {
-                p.health = Math.max(0, p.health - blastDamage);
-                events.push({
-                  id: uuidv4(),
-                  type: 'damage',
-                  playerId: p.id,
-                  fromX: bx,
-                  fromY: by,
-                  damage: blastDamage,
-                  description: `${p.username} hit by nuclear shockwave at (${bx}, ${by}) (-${blastDamage} HP)`,
-                });
-                if (p.health <= 0) {
-                  recordDeath(p, 'vaporized in nuclear blast');
-                }
+          // Damage players in blast
+          for (const p of Object.values(players)) {
+            if (p.isAlive && p.x === bx && p.y === by) {
+              p.health = Math.max(0, p.health - blastDamage);
+              events.push({
+                id: uuidv4(),
+                type: 'damage',
+                playerId: p.id,
+                fromX: bx,
+                fromY: by,
+                damage: blastDamage,
+                description: `${p.username} hit by nuclear shockwave at (${bx}, ${by}) (-${blastDamage} HP)`,
+              });
+              if (p.health <= 0) {
+                recordDeath(p, 'vaporized in nuclear blast');
               }
             }
+          }
 
-            // Damage buildings in blast
-            for (let i = buildings.length - 1; i >= 0; i--) {
-              const b = buildings[i];
-              if (b.x === bx && b.y === by) {
-                b.health -= blastDamage;
-                if (b.health <= 0) {
-                  buildings.splice(i, 1);
-                  events.push({
-                    id: uuidv4(),
-                    type: 'building_destroyed',
-                    buildingId: b.id,
-                    buildingType: b.type,
-                    fromX: b.x,
-                    fromY: b.y,
-                    description: `${b.type.toUpperCase()} at (${b.x}, ${b.y}) destroyed in nuclear strike`,
-                  });
-                }
+          // Damage buildings in blast
+          for (let i = buildings.length - 1; i >= 0; i--) {
+            const b = buildings[i];
+            if (b.x === bx && b.y === by) {
+              b.health -= blastDamage;
+              if (b.health <= 0) {
+                buildings.splice(i, 1);
+                events.push({
+                  id: uuidv4(),
+                  type: 'building_destroyed',
+                  buildingId: b.id,
+                  buildingType: b.type,
+                  fromX: b.x,
+                  fromY: b.y,
+                  description: `${b.type.toUpperCase()} at (${b.x}, ${b.y}) destroyed in nuclear strike`,
+                });
               }
             }
           }
@@ -780,6 +876,7 @@ export class GameEngine {
       playerPriorityOrder: nextPlayerOrder,
       players,
       buildings,
+      minesPlaced,
       events,
     };
 

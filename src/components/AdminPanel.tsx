@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   X,
   UserPlus,
@@ -13,12 +13,20 @@ import {
   Link,
   Play,
   Key,
+  Handshake,
+  AlertTriangle,
 } from 'lucide-react';
 import { Player, GameRecord, BuildingType } from '../types/game';
 import {
   ALL_BUILDING_TYPES,
   DEFAULT_MAP_SIZE,
+  DEFAULT_PLAYER_HEALTH,
+  DEFAULT_REWARD_POOL,
+  DEFAULT_MINE_LIMIT,
+  DEFAULT_MINE_LIMIT_INCREASE_DAYS,
+  DEFAULT_ASSASSINATION_COST,
   MAP_SIZE_OPTIONS,
+  PLAYER_HEALTH_OPTIONS,
   createDefaultBuildingConfig,
 } from '../game/rules';
 
@@ -31,7 +39,12 @@ const BUILDING_LABELS: Record<BuildingType, string> = {
 
 interface StartGameConfig {
   mapSize: number;
+  playerHealth: number;
+  rewardPool: number;
   enabledBuildings: Record<BuildingType, boolean>;
+  mineLimit: number;
+  mineLimitIncreaseDays: number;
+  assassinationCost: number;
 }
 
 interface AdminPanelProps {
@@ -44,6 +57,10 @@ interface AdminPanelProps {
   onResetGame: () => void;
   onStartGame: (config: StartGameConfig) => void;
   onToggleBuilding: (buildingType: BuildingType, enabled: boolean) => void;
+  onUpdateRewardPool: (rewardPool: number) => void;
+  onUpdateMineRules: (mineLimit: number, mineLimitIncreaseDays: number) => void;
+  onUpdateAssassinationCost: (assassinationCost: number) => void;
+  onEndGameWorldPeace: () => void;
   isProcessing: boolean;
 }
 
@@ -57,6 +74,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   onResetGame,
   onStartGame,
   onToggleBuilding,
+  onUpdateRewardPool,
+  onUpdateMineRules,
+  onUpdateAssassinationCost,
+  onEndGameWorldPeace,
   isProcessing,
 }) => {
   // Create player form state
@@ -83,9 +104,74 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   // Next-game settings
   const [startMapSize, setStartMapSize] = useState<number>(DEFAULT_MAP_SIZE);
+  const [startPlayerHealth, setStartPlayerHealth] = useState<number>(DEFAULT_PLAYER_HEALTH);
+  const [startRewardPool, setStartRewardPool] = useState<number>(DEFAULT_REWARD_POOL);
+  const [activeRewardPool, setActiveRewardPool] = useState<number>(DEFAULT_REWARD_POOL);
+  const [startMineLimit, setStartMineLimit] = useState<number>(DEFAULT_MINE_LIMIT);
+  const [startMineLimitIncreaseDays, setStartMineLimitIncreaseDays] = useState<number>(
+    DEFAULT_MINE_LIMIT_INCREASE_DAYS
+  );
+  const [activeMineLimit, setActiveMineLimit] = useState<number>(DEFAULT_MINE_LIMIT);
+  const [activeMineLimitIncreaseDays, setActiveMineLimitIncreaseDays] = useState<number>(
+    DEFAULT_MINE_LIMIT_INCREASE_DAYS
+  );
+  const [startAssassinationCost, setStartAssassinationCost] = useState<number>(
+    DEFAULT_ASSASSINATION_COST
+  );
+  const [activeAssassinationCost, setActiveAssassinationCost] = useState<number>(
+    DEFAULT_ASSASSINATION_COST
+  );
   const [startBuildings, setStartBuildings] = useState<Record<BuildingType, boolean>>(
     createDefaultBuildingConfig()
   );
+
+  // Early world-peace flow: 5s hold, then a yes-clicked-twice confirmation.
+  const [holdProgress, setHoldProgress] = useState<number>(0);
+  const [showEndPrompt, setShowEndPrompt] = useState<boolean>(false);
+  const [endConfirmStep, setEndConfirmStep] = useState<number>(0);
+  const holdIntervalRef = useRef<number | null>(null);
+
+  const stopHold = () => {
+    if (holdIntervalRef.current !== null) {
+      window.clearInterval(holdIntervalRef.current);
+      holdIntervalRef.current = null;
+    }
+    setHoldProgress(0);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (holdIntervalRef.current !== null) {
+        window.clearInterval(holdIntervalRef.current);
+        holdIntervalRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen) {
+      stopHold();
+      setShowEndPrompt(false);
+      setEndConfirmStep(0);
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (game && game.currentDay > 0 && game.phase !== 'over') {
+      setActiveRewardPool(game.rewardPool);
+      setActiveMineLimit(game.mineLimit);
+      setActiveMineLimitIncreaseDays(game.mineLimitIncreaseDays);
+      setActiveAssassinationCost(game.assassinationCost);
+    }
+  }, [
+    game?.id,
+    game?.currentDay,
+    game?.phase,
+    game?.rewardPool,
+    game?.mineLimit,
+    game?.mineLimitIncreaseDays,
+    game?.assassinationCost,
+  ]);
 
   if (!isOpen) return null;
 
@@ -95,6 +181,54 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const activeBuildings = game?.enabledBuildings ?? createDefaultBuildingConfig();
   const shownBuildings = isStagingNextGame ? startBuildings : activeBuildings;
   const shownMapSize = isStagingNextGame ? startMapSize : game?.mapSize ?? DEFAULT_MAP_SIZE;
+  const shownPlayerHealth = isStagingNextGame
+    ? startPlayerHealth
+    : game?.playerHealth ?? DEFAULT_PLAYER_HEALTH;
+  const shownRewardPool = isStagingNextGame ? startRewardPool : activeRewardPool;
+  const shownMineLimit = isStagingNextGame ? startMineLimit : activeMineLimit;
+  const shownMineLimitIncreaseDays = isStagingNextGame
+    ? startMineLimitIncreaseDays
+    : activeMineLimitIncreaseDays;
+  const mineRulesChanged =
+    !isStagingNextGame &&
+    (activeMineLimit !== game?.mineLimit ||
+      activeMineLimitIncreaseDays !== game?.mineLimitIncreaseDays);
+  const shownAssassinationCost = isStagingNextGame
+    ? startAssassinationCost
+    : activeAssassinationCost;
+  const assassinationCostChanged =
+    !isStagingNextGame && activeAssassinationCost !== game?.assassinationCost;
+
+  const startHold = () => {
+    if (isUnstarted || isGameOver || isProcessing || showEndPrompt) return;
+    if (holdIntervalRef.current !== null) return;
+
+    const startedAt = Date.now();
+    holdIntervalRef.current = window.setInterval(() => {
+      const progress = Math.min(100, ((Date.now() - startedAt) / 5000) * 100);
+      setHoldProgress(progress);
+      if (progress >= 100) {
+        stopHold();
+        setEndConfirmStep(0);
+        setShowEndPrompt(true);
+      }
+    }, 50);
+  };
+
+  const handleConfirmEnd = () => {
+    if (endConfirmStep === 0) {
+      setEndConfirmStep(1);
+      return;
+    }
+    setShowEndPrompt(false);
+    setEndConfirmStep(0);
+    onEndGameWorldPeace();
+  };
+
+  const cancelEndPrompt = () => {
+    setShowEndPrompt(false);
+    setEndConfirmStep(0);
+  };
 
   const handleBuildingToggle = (type: BuildingType) => {
     if (isStagingNextGame) {
@@ -283,6 +417,171 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               )}
             </div>
 
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[11px] font-bold text-zinc-200">Player Health</div>
+                <div className="text-[10px] text-zinc-500">
+                  {isStagingNextGame
+                    ? 'Starting and maximum HP for every operative.'
+                    : 'Health is fixed once the game has started.'}
+                </div>
+              </div>
+              {isStagingNextGame ? (
+                <select
+                  value={startPlayerHealth}
+                  onChange={(e) => setStartPlayerHealth(parseInt(e.target.value, 10))}
+                  className="bg-zinc-950 border border-zinc-700 text-xs text-white rounded-lg px-2 py-1.5"
+                >
+                  {PLAYER_HEALTH_OPTIONS.map((health) => (
+                    <option key={health} value={health}>
+                      {health} HP
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <span className="text-xs font-mono text-amber-300 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1.5">
+                  {shownPlayerHealth} HP
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[11px] font-bold text-zinc-200">Token Reward Pool</div>
+                <div className="text-[10px] text-zinc-500">
+                  {isStagingNextGame
+                    ? 'Tokens split equally among surviving winners. Default: 100.'
+                    : 'Editable mid-game. Split equally among survivors, rounded down.'}
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={shownRewardPool}
+                  disabled={isProcessing}
+                  onChange={(e) => {
+                    const next = Math.max(0, parseInt(e.target.value, 10) || 0);
+                    if (isStagingNextGame) setStartRewardPool(next);
+                    else setActiveRewardPool(next);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !isStagingNextGame) {
+                      onUpdateRewardPool(activeRewardPool);
+                    }
+                  }}
+                  className="w-24 bg-zinc-950 border border-zinc-700 text-xs text-white rounded-lg px-2 py-1.5 text-right font-mono disabled:opacity-50"
+                />
+                {!isStagingNextGame && activeRewardPool !== game?.rewardPool && (
+                  <button
+                    type="button"
+                    disabled={isProcessing}
+                    onClick={() => onUpdateRewardPool(activeRewardPool)}
+                    className="px-2 py-1.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-[11px] font-bold rounded-lg disabled:opacity-50"
+                  >
+                    Save
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[11px] font-bold text-zinc-200">Mine Limit</div>
+                <div className="text-[10px] text-zinc-500">
+                  {isStagingNextGame
+                    ? 'Mines each player may place over the whole game. Destroyed mines still count.'
+                    : 'Editable mid-game. Destroyed mines still count toward the total.'}
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-1.5">
+                <input
+                  type="number"
+                  min="0"
+                  max="99"
+                  step="1"
+                  value={shownMineLimit}
+                  disabled={isProcessing}
+                  onChange={(e) => {
+                    const next = Math.max(0, parseInt(e.target.value, 10) || 0);
+                    if (isStagingNextGame) setStartMineLimit(next);
+                    else setActiveMineLimit(next);
+                  }}
+                  className="w-16 bg-zinc-950 border border-zinc-700 text-xs text-white rounded-lg px-2 py-1.5 text-right font-mono disabled:opacity-50"
+                  title="Base mines per player"
+                />
+                <span className="text-[10px] text-zinc-500">mines, +1 every</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="999"
+                  step="1"
+                  value={shownMineLimitIncreaseDays}
+                  disabled={isProcessing}
+                  onChange={(e) => {
+                    const next = Math.max(1, parseInt(e.target.value, 10) || 1);
+                    if (isStagingNextGame) setStartMineLimitIncreaseDays(next);
+                    else setActiveMineLimitIncreaseDays(next);
+                  }}
+                  className="w-16 bg-zinc-950 border border-zinc-700 text-xs text-white rounded-lg px-2 py-1.5 text-right font-mono disabled:opacity-50"
+                  title="Days between mine limit increases"
+                />
+                <span className="text-[10px] text-zinc-500">days</span>
+                {!isStagingNextGame && mineRulesChanged && (
+                  <button
+                    type="button"
+                    disabled={isProcessing}
+                    onClick={() =>
+                      onUpdateMineRules(activeMineLimit, activeMineLimitIncreaseDays)
+                    }
+                    className="px-2 py-1.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-[11px] font-bold rounded-lg disabled:opacity-50"
+                  >
+                    Save
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[11px] font-bold text-zinc-200">Assassination Cost</div>
+                <div className="text-[10px] text-zinc-500">
+                  {isStagingNextGame
+                    ? 'Points for 1 guaranteed damage with unlimited range. 0 disables it.'
+                    : 'Editable mid-game. 0 disables assassination.'}
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  min="0"
+                  max="99"
+                  step="1"
+                  value={shownAssassinationCost}
+                  disabled={isProcessing}
+                  onChange={(e) => {
+                    const next = Math.max(0, parseInt(e.target.value, 10) || 0);
+                    if (isStagingNextGame) setStartAssassinationCost(next);
+                    else setActiveAssassinationCost(next);
+                  }}
+                  className="w-16 bg-zinc-950 border border-zinc-700 text-xs text-white rounded-lg px-2 py-1.5 text-right font-mono disabled:opacity-50"
+                  title="Assassination cost in points (0 = disabled)"
+                />
+                <span className="text-[10px] text-zinc-500">pts</span>
+                {!isStagingNextGame && assassinationCostChanged && (
+                  <button
+                    type="button"
+                    disabled={isProcessing}
+                    onClick={() => onUpdateAssassinationCost(activeAssassinationCost)}
+                    className="px-2 py-1.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-[11px] font-bold rounded-lg disabled:opacity-50"
+                  >
+                    Save
+                  </button>
+                )}
+              </div>
+            </div>
+
             <div>
               <div className="text-[11px] font-bold text-zinc-200 mb-1">Buildings</div>
               <div className="grid grid-cols-2 gap-1.5">
@@ -315,7 +614,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <button
                 disabled={isProcessing}
                 onClick={() =>
-                  onStartGame({ mapSize: startMapSize, enabledBuildings: startBuildings })
+                  onStartGame({
+                    mapSize: startMapSize,
+                    playerHealth: startPlayerHealth,
+                    rewardPool: startRewardPool,
+                    enabledBuildings: startBuildings,
+                    mineLimit: startMineLimit,
+                    mineLimitIncreaseDays: startMineLimitIncreaseDays,
+                    assassinationCost: startAssassinationCost,
+                  })
                 }
                 className="min-h-11 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-zinc-950 font-bold text-xs uppercase tracking-wider rounded-lg flex items-center gap-1.5 disabled:opacity-40"
               >
@@ -334,6 +641,32 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               >
                 <FastForward className="w-4 h-4 fill-white" />
                 {isProcessing ? 'Resolving Day...' : 'Resolve Current Day'}
+              </button>
+            )}
+
+            {/* End the game early with World Peace (5s hold + double confirmation) */}
+            {!isUnstarted && !isGameOver && (
+              <button
+                type="button"
+                disabled={isProcessing}
+                onPointerDown={startHold}
+                onPointerUp={stopHold}
+                onPointerLeave={stopHold}
+                onPointerCancel={stopHold}
+                onContextMenu={(e) => e.preventDefault()}
+                title="Hold for 5 seconds, then confirm twice. Ends the game and splits tokens equally among surviving winners."
+                className="relative overflow-hidden min-h-11 px-4 py-2 bg-red-950 hover:bg-red-900 text-red-200 font-bold text-xs uppercase tracking-wider rounded-lg border border-red-700/70 flex items-center gap-1.5 disabled:opacity-40 select-none touch-none"
+              >
+                <span
+                  className="absolute inset-y-0 left-0 bg-red-600/60 transition-[width] duration-75"
+                  style={{ width: `${holdProgress}%` }}
+                />
+                <span className="relative z-10 flex items-center gap-1.5">
+                  <Handshake className="w-4 h-4" />
+                  {holdProgress > 0
+                    ? `Hold... ${Math.floor(holdProgress)}%`
+                    : 'Hold 5s: World Peace'}
+                </span>
               </button>
             )}
 
@@ -380,6 +713,53 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   [{l.timestamp.slice(11, 19)}] {l.message}
                 </div>
               ))}
+            </div>
+          </div>
+        )}
+
+        {/* Early End Confirmation: YES must be clicked twice */}
+        {showEndPrompt && (
+          <div className="fixed inset-0 z-[60] bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="bg-zinc-950 border border-red-700/70 rounded-2xl w-full max-w-md p-5 flex flex-col gap-4 shadow-2xl">
+              <div className="flex items-center gap-2 text-red-400">
+                <AlertTriangle className="w-5 h-5" />
+                <h3 className="text-sm font-bold uppercase tracking-wider">
+                  End Game In World Peace?
+                </h3>
+              </div>
+              <p className="text-xs text-zinc-300 leading-relaxed">
+                This immediately ends the current game. The reward pool of{' '}
+                <span className="font-mono font-bold text-amber-300">
+                  {game?.rewardPool ?? DEFAULT_REWARD_POOL} tokens
+                </span>{' '}
+                will be split equally among surviving winners, rounded down, and the game will be
+                marked as finished.
+              </p>
+              <p className="text-[11px] text-red-300 bg-red-950/60 border border-red-800 rounded-lg p-2">
+                This cannot be undone. You must click <span className="font-bold">YES</span> twice
+                to confirm.
+              </p>
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={cancelEndPrompt}
+                  className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-semibold rounded-lg border border-zinc-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmEnd}
+                  disabled={isProcessing}
+                  className={`px-4 py-2 text-xs font-bold uppercase tracking-wider rounded-lg disabled:opacity-50 ${
+                    endConfirmStep === 0
+                      ? 'bg-red-600 hover:bg-red-500 text-white'
+                      : 'bg-amber-500 hover:bg-amber-400 text-zinc-950'
+                  }`}
+                >
+                  {endConfirmStep === 0 ? 'Yes' : 'Yes — Click Again'}
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -521,7 +901,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               )}
                             </div>
                             <div className="text-[10px] text-zinc-400 font-mono">
-                              ID: {p.id.slice(0, 8)}... | Matches: {p.stats.gamesPlayed} | Deaths: {p.stats.deaths}
+                              ID: {p.id.slice(0, 8)}... | Matches: {p.stats.gamesPlayed} | Deaths:{' '}
+                              {p.stats.deaths} | Tokens: {p.tokens}
                             </div>
                           </>
                         )}

@@ -17,6 +17,42 @@ export const MAP_SIZE_OPTIONS: number[] = Array.from(
   (_, i) => MAP_SIZE_MIN + i * MAP_SIZE_STEP
 );
 
+/**
+ * Player health is chosen per-game by an admin, just like map size.
+ */
+export const DEFAULT_PLAYER_HEALTH = 3;
+export const PLAYER_HEALTH_MIN = 1;
+export const PLAYER_HEALTH_MAX = 10;
+export const PLAYER_HEALTH_STEP = 1;
+export const PLAYER_HEALTH_OPTIONS: number[] = Array.from(
+  { length: (PLAYER_HEALTH_MAX - PLAYER_HEALTH_MIN) / PLAYER_HEALTH_STEP + 1 },
+  (_, i) => PLAYER_HEALTH_MIN + i * PLAYER_HEALTH_STEP
+);
+
+export const DEFAULT_REWARD_POOL = 100;
+
+/**
+ * Each player may place this many mines over the lifetime of a game. Mines
+ * that detonate or are destroyed still count toward the total.
+ */
+export const DEFAULT_MINE_LIMIT = 2;
+export const MINE_LIMIT_MIN = 0;
+export const MINE_LIMIT_MAX = 99;
+
+/** The mine limit grows by +1 every N days. */
+export const DEFAULT_MINE_LIMIT_INCREASE_DAYS = 10;
+export const MINE_LIMIT_INCREASE_DAYS_MIN = 1;
+export const MINE_LIMIT_INCREASE_DAYS_MAX = 999;
+
+/**
+ * Assassination is a range-free attack that costs a fixed number of points
+ * for 1 guaranteed damage. Admins can change the cost per game; 0 disables it.
+ */
+export const DEFAULT_ASSASSINATION_COST = 3;
+export const ASSASSINATION_COST_MIN = 0;
+export const ASSASSINATION_COST_MAX = 99;
+export const ASSASSINATION_DAMAGE = 1;
+
 export const ALL_BUILDING_TYPES: BuildingType[] = ['mine', 'outpost', 'silo', 'bank'];
 
 export function createDefaultBuildingConfig(): Record<BuildingType, boolean> {
@@ -32,10 +68,92 @@ export function isValidMapSize(size: number): boolean {
   );
 }
 
+export function isValidPlayerHealth(health: number): boolean {
+  return (
+    Number.isInteger(health) &&
+    health >= PLAYER_HEALTH_MIN &&
+    health <= PLAYER_HEALTH_MAX &&
+    health % PLAYER_HEALTH_STEP === 0
+  );
+}
+
+export function isValidRewardPool(pool: number): boolean {
+  return Number.isSafeInteger(pool) && pool >= 0;
+}
+
+export function isValidMineLimit(limit: number): boolean {
+  return (
+    Number.isInteger(limit) &&
+    limit >= MINE_LIMIT_MIN &&
+    limit <= MINE_LIMIT_MAX
+  );
+}
+
+export function isValidMineLimitIncreaseDays(days: number): boolean {
+  return (
+    Number.isInteger(days) &&
+    days >= MINE_LIMIT_INCREASE_DAYS_MIN &&
+    days <= MINE_LIMIT_INCREASE_DAYS_MAX
+  );
+}
+
+export function isValidAssassinationCost(cost: number): boolean {
+  return (
+    Number.isInteger(cost) &&
+    cost >= ASSASSINATION_COST_MIN &&
+    cost <= ASSASSINATION_COST_MAX
+  );
+}
+
+/**
+ * Base mine limit plus one extra mine for every completed interval. The limit
+ * increases on day 10, 20, 30, ... when the interval is 10.
+ */
+export function getMineLimitForDay(
+  baseLimit: number,
+  day: number,
+  increaseEveryDays: number
+): number {
+  const base = Math.max(0, Math.floor(Number.isFinite(baseLimit) ? baseLimit : 0));
+  const interval = Math.floor(
+    Number.isFinite(increaseEveryDays) ? increaseEveryDays : 0
+  );
+  if (interval <= 0) return base;
+  const safeDay = Math.max(0, Math.floor(Number.isFinite(day) ? day : 0));
+  return base + Math.floor(safeDay / interval);
+}
+
+/**
+ * The next day on which the mine limit will be higher, or null when the
+ * increase interval is disabled.
+ */
+export function getNextMineLimitIncreaseDay(
+  day: number,
+  increaseEveryDays: number
+): number | null {
+  const interval = Math.floor(
+    Number.isFinite(increaseEveryDays) ? increaseEveryDays : 0
+  );
+  if (interval <= 0) return null;
+  const safeDay = Math.max(1, Math.floor(Number.isFinite(day) ? day : 1));
+  return Math.ceil((safeDay + 1) / interval) * interval;
+}
+
+/**
+ * The reward pool is split equally among winners. Remainders are intentionally
+ * discarded, so a 100-token pool split by 3 awards 33 tokens to each winner.
+ */
+export function getRewardPerWinner(pool: number, winnerCount: number): number {
+  const safePool = Math.max(0, Math.floor(Number.isFinite(pool) ? pool : 0));
+  const safeCount = Math.floor(Number.isFinite(winnerCount) ? winnerCount : 0);
+  if (safeCount <= 0) return 0;
+  return Math.floor(safePool / safeCount);
+}
+
 export const GAME_RULES = {
-  // Player bounds
-  INITIAL_HEALTH: 3,
-  MAX_HEALTH: 3,
+  // Player bounds (defaults; the live cap is the game's playerHealth)
+  INITIAL_HEALTH: DEFAULT_PLAYER_HEALTH,
+  MAX_HEALTH: DEFAULT_PLAYER_HEALTH,
   POINTS_PER_ROUND: 1,
   INITIAL_POINTS: 1,
 
@@ -70,8 +188,9 @@ export const GAME_RULES = {
       blocksMovement: true,
       ownerOnlyVisible: false,
       launchCost: 1,
-      centerDamage: 2,
-      surroundDamage: 1,
+      centerDamage: 3,
+      surroundDamage: 2,
+      outerDamage: 1,
     },
     bank: {
       cost: 1,
@@ -95,12 +214,36 @@ export const GAME_RULES = {
 };
 
 /**
+ * 13-tile nuclear blast: 3x3 core plus one extra tile at each cardinal end.
+ * Center deals 3, the surrounding 8 deal 2, and the four outer tips deal 1.
+ */
+export const NUKE_BLAST_OFFSETS: ReadonlyArray<{
+  dx: number;
+  dy: number;
+  damage: number;
+}> = [
+  { dx: 0, dy: 0, damage: GAME_RULES.BUILDINGS.silo.centerDamage },
+  { dx: -1, dy: -1, damage: GAME_RULES.BUILDINGS.silo.surroundDamage },
+  { dx: 0, dy: -1, damage: GAME_RULES.BUILDINGS.silo.surroundDamage },
+  { dx: 1, dy: -1, damage: GAME_RULES.BUILDINGS.silo.surroundDamage },
+  { dx: -1, dy: 0, damage: GAME_RULES.BUILDINGS.silo.surroundDamage },
+  { dx: 1, dy: 0, damage: GAME_RULES.BUILDINGS.silo.surroundDamage },
+  { dx: -1, dy: 1, damage: GAME_RULES.BUILDINGS.silo.surroundDamage },
+  { dx: 0, dy: 1, damage: GAME_RULES.BUILDINGS.silo.surroundDamage },
+  { dx: 1, dy: 1, damage: GAME_RULES.BUILDINGS.silo.surroundDamage },
+  { dx: 0, dy: -2, damage: GAME_RULES.BUILDINGS.silo.outerDamage },
+  { dx: 0, dy: 2, damage: GAME_RULES.BUILDINGS.silo.outerDamage },
+  { dx: -2, dy: 0, damage: GAME_RULES.BUILDINGS.silo.outerDamage },
+  { dx: 2, dy: 0, damage: GAME_RULES.BUILDINGS.silo.outerDamage },
+];
+
+/**
  * Returns the global action priority group (1-5) for a given action type.
  * Priority 1: Sending points
  * Priority 2: Healing
  * Priority 3: Building (and Claiming Bank)
  * Priority 4: Moving
- * Priority 5: Attacking (and Nuclear launch)
+ * Priority 5: Attacking (and Nuclear launch / Assassination)
  */
 export function getActionPriorityGroup(actionType: ActionType): 1 | 2 | 3 | 4 | 5 {
   switch (actionType) {
@@ -114,6 +257,7 @@ export function getActionPriorityGroup(actionType: ActionType): 1 | 2 | 3 | 4 | 
     case 'move':
       return 4;
     case 'attack':
+    case 'assassinate':
     case 'launch_nuke':
       return 5;
   }
@@ -124,11 +268,13 @@ export function getActionPriorityGroup(actionType: ActionType): 1 | 2 | 3 | 4 | 
  */
 export function getFixedActionCost(
   actionType: ActionType,
-  buildingType?: BuildingType
+  buildingType?: BuildingType,
+  assassinationCost: number = DEFAULT_ASSASSINATION_COST
 ): number | null {
   if (actionType === 'move') return 1;
   if (actionType === 'claim_bank') return GAME_RULES.BUILDINGS.bank.claimCost;
   if (actionType === 'launch_nuke') return GAME_RULES.BUILDINGS.silo.launchCost;
+  if (actionType === 'assassinate') return assassinationCost;
   if (actionType === 'build') {
     if (!buildingType) return 1;
     return GAME_RULES.BUILDINGS[buildingType].cost;

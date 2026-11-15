@@ -17,15 +17,28 @@ import {
   ChevronDown,
   ChevronUp,
   Footprints,
+  HelpCircle,
+  Crosshair,
 } from 'lucide-react';
 import { ActionData, ActionType, BuildingType, Player, Building } from '../types/game';
-import { getActionPriorityGroup, getFixedActionCost } from '../game/rules';
+import {
+  GAME_RULES,
+  DEFAULT_MAP_SIZE,
+  DEFAULT_PLAYER_HEALTH,
+  DEFAULT_MINE_LIMIT,
+  DEFAULT_ASSASSINATION_COST,
+  ASSASSINATION_DAMAGE,
+  getActionPriorityGroup,
+  getFixedActionCost,
+  isSquareInPlayerRange,
+} from '../game/rules';
 
 export interface ActionConfig {
   amount: number;
   allowPartial: boolean;
   buildingType: BuildingType;
   targetPlayerId: string;
+  assassinationTargetId: string;
 }
 
 interface ActionPlannerProps {
@@ -46,6 +59,13 @@ interface ActionPlannerProps {
   saveSuccess: boolean;
   ghostPosition?: { x: number; y: number } | null;
   enabledBuildings: Record<BuildingType, boolean>;
+  maxHealth?: number;
+  mapSize?: number;
+  selectedNukeSiloId?: string | null;
+  mineLimit?: number;
+  minesPlaced?: number;
+  nextMineLimitDay?: number | null;
+  assassinationCost?: number;
 }
 
 const ACTION_TABS: Array<{
@@ -60,6 +80,7 @@ const ACTION_TABS: Array<{
   { id: 'build', label: 'Build', icon: Hammer, cost: '1-2', group: 3 },
   { id: 'move', label: 'Move', icon: Move, cost: '1 pt', group: 4 },
   { id: 'attack', label: 'Attack', icon: Sword, cost: 'Var', group: 5 },
+  { id: 'assassinate', label: 'Assassin', icon: Crosshair, cost: 'Fixed', group: 5 },
 ];
 
 const GROUP_LABELS: Record<number, string> = {
@@ -68,6 +89,46 @@ const GROUP_LABELS: Record<number, string> = {
   3: 'BUILD',
   4: 'MOVE',
   5: 'ATTACK',
+};
+
+const PartialExecutionToggle: React.FC<{
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}> = ({ checked, onChange }) => {
+  const [showHelp, setShowHelp] = useState(false);
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-1.5 text-[11px] text-zinc-300">
+        <label className="flex items-center gap-1.5 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={checked}
+            onChange={(e) => onChange(e.target.checked)}
+            className="accent-amber-500"
+          />
+          <span>Allow partial execution</span>
+        </label>
+        <button
+          type="button"
+          onClick={() => setShowHelp((cur) => !cur)}
+          className="text-zinc-500 hover:text-zinc-300"
+          title="If checked, this action spends whatever points you have left at resolution instead of being cancelled when you cannot afford the full amount."
+          aria-label="Partial execution explanation"
+          aria-expanded={showHelp}
+        >
+          <HelpCircle className="w-3 h-3" />
+        </button>
+      </div>
+      {showHelp && (
+        <div className="text-[10px] leading-snug text-zinc-400 bg-zinc-950/80 border border-zinc-800 rounded-lg px-2 py-1.5">
+          If checked, this action spends whatever points you have left when it resolves
+          instead of being cancelled because you could not afford the full amount. It
+          never spends more than you have.
+        </div>
+      )}
+    </div>
+  );
 };
 
 export const ActionPlanner: React.FC<ActionPlannerProps> = ({
@@ -88,6 +149,13 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
   saveSuccess,
   ghostPosition,
   enabledBuildings,
+  maxHealth = DEFAULT_PLAYER_HEALTH,
+  mapSize = DEFAULT_MAP_SIZE,
+  selectedNukeSiloId = null,
+  mineLimit = DEFAULT_MINE_LIMIT,
+  minesPlaced = 0,
+  nextMineLimitDay = null,
+  assassinationCost = DEFAULT_ASSASSINATION_COST,
 }) => {
   const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<ActionType>('move');
@@ -105,12 +173,13 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
 
   if (!player) return null;
 
-  const { amount, allowPartial, buildingType, targetPlayerId } = actionConfig;
+  const { amount, allowPartial, buildingType, targetPlayerId, assassinationTargetId } =
+    actionConfig;
 
   // Calculate planned points spent
   let totalCost = 0;
   actions.forEach((act) => {
-    const fixed = getFixedActionCost(act.actionType, act.buildingType);
+    const fixed = getFixedActionCost(act.actionType, act.buildingType, assassinationCost);
     if (fixed !== null) {
       totalCost += fixed;
     } else {
@@ -120,14 +189,27 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
 
   const remainingPoints = player.points - totalCost;
   const isOverBudget = remainingPoints < 0;
+  const mineLimitReached = minesPlaced >= mineLimit;
 
   // Living targets
   const livingTargets = allPlayers.filter((p) => p.isAlive && p.id !== player.id);
+  const transferTargets = livingTargets.filter((target) =>
+    isSquareInPlayerRange(player.x, player.y, target.x, target.y, mapSize)
+  );
+  const selectedTransferTarget = transferTargets.find((target) => target.id === targetPlayerId);
+  const assassinationTargets = livingTargets;
+  const selectedAssassinationTarget = assassinationTargets.find(
+    (target) => target.id === assassinationTargetId
+  );
+  const isAssassinationDisabled = assassinationCost <= 0;
 
   // Owned assets
   const ownedArmedSilos = buildings.filter(
     (b) => b.type === 'silo' && b.ownerId === player.id && b.isArmed && !b.isSpent
   );
+  const selectedNukeSilo = selectedNukeSiloId
+    ? buildings.find((b) => b.id === selectedNukeSiloId)
+    : null;
 
   // Planned actions are always displayed in resolution-priority order, regardless
   // of the order in which they were queued. Keep the original index for deletion.
@@ -151,10 +233,14 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
           ? allowPartial
           : undefined,
       buildingType: actType === 'build' ? buildingType : undefined,
-      x: selectedTile?.x,
-      y: selectedTile?.y,
+      x: actType === 'assassinate' ? undefined : selectedTile?.x,
+      y: actType === 'assassinate' ? undefined : selectedTile?.y,
       targetPlayerId:
-        actType === 'send_points' ? targetPlayerId || livingTargets[0]?.id : undefined,
+        actType === 'send_points'
+          ? selectedTransferTarget?.id
+          : actType === 'assassinate'
+          ? selectedAssassinationTarget?.id
+          : undefined,
       ...extra,
     });
   };
@@ -237,7 +323,7 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
           )}
 
           {/* Action Tabs — ordered by resolution priority group */}
-          <div className="grid grid-cols-5 gap-1 bg-zinc-950 p-1 rounded-xl border border-zinc-800">
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-1 bg-zinc-950 p-1 rounded-xl border border-zinc-800">
             {ACTION_TABS.map((tab) => {
               const Icon = tab.icon;
               const isActive =
@@ -246,9 +332,13 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
               return (
                 <button
                   key={tab.id}
-                  disabled={isClosed || !player.isAlive}
+                  disabled={
+                    isClosed ||
+                    !player.isAlive ||
+                    (tab.id === 'assassinate' && isAssassinationDisabled)
+                  }
                   onClick={() => {
-                    const next = selectedActionType === tab.id ? null : tab.id;
+                    const next = isActive ? null : tab.id;
                     if (next) setActiveTab(tab.id);
                     onSelectActionType(next);
                   }}
@@ -332,90 +422,157 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                     {isNukeTargeting ? 'Nuclear Strike:' : 'Strike:'}
                   </span>{' '}
                   {isNukeTargeting
-                    ? 'Click ANY tile to launch a 3×3 nuclear blast from an armed silo.'
-                    : 'Click a highlighted tile to strike. 1 pt = 1 damage. Current range is blue; projected range after moves is purple.'}
+                    ? selectedNukeSilo
+                      ? `Silo at (${selectedNukeSilo.x}, ${selectedNukeSilo.y}) selected. Click any tile to assign its target; it launches next round.`
+                      : 'Click a ready silo on the map to select its launch target.'
+                    : 'Click a highlighted tile to strike. 1 pt = 1 damage. Current range is blue; projected range after moves is purple (attacks only).'}
                 </div>
-                <div className="grid grid-cols-2 gap-2 items-center">
-                  <div>
-                    <label className="text-[10px] text-zinc-400 block mb-0.5">Target Tile:</label>
-                    <div className="text-xs font-mono font-bold text-amber-300 bg-zinc-950 border border-zinc-700 px-2 py-1 rounded">
-                      {selectedTile ? `(${selectedTile.x}, ${selectedTile.y})` : 'Click tile on map'}
+                {isNukeTargeting ? (
+                  <div className="grid grid-cols-2 gap-2 items-center">
+                    <div>
+                      <label className="text-[10px] text-zinc-400 block mb-0.5">Target Tile:</label>
+                      <div className="text-xs font-mono font-bold text-amber-300 bg-zinc-950 border border-zinc-700 px-2 py-1 rounded">
+                        {selectedTile ? `(${selectedTile.x}, ${selectedTile.y})` : 'Click tile on map'}
+                      </div>
+                    </div>
+                    <div className="text-[10px] text-red-300/90 font-mono leading-tight">
+                      Fixed launch cost: {GAME_RULES.BUILDINGS.silo.launchCost} pt.
+                      <br />
+                      The selected armed silo is consumed on launch.
                     </div>
                   </div>
-                  <div>
-                    <label className="text-[10px] text-zinc-400 block mb-0.5">
-                      Points ({amount}):
-                    </label>
-                    <input
-                      type="range"
-                      min="1"
-                      max={Math.max(1, player.points)}
-                      value={amount}
-                      onChange={(e) =>
-                        onActionConfigChange({ amount: parseInt(e.target.value, 10) })
-                      }
-                      className="w-full accent-amber-500"
-                    />
-                  </div>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-2 gap-2 items-center">
+                      <div>
+                        <label className="text-[10px] text-zinc-400 block mb-0.5">
+                          Target Tile:
+                        </label>
+                        <div className="text-xs font-mono font-bold text-amber-300 bg-zinc-950 border border-zinc-700 px-2 py-1 rounded">
+                          {selectedTile
+                            ? `(${selectedTile.x}, ${selectedTile.y})`
+                            : 'Click tile on map'}
+                        </div>
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-zinc-400 block mb-0.5">
+                          Points ({amount}):
+                        </label>
+                        <input
+                          type="range"
+                          min="1"
+                          max={Math.max(1, player.points)}
+                          value={amount}
+                          onChange={(e) =>
+                            onActionConfigChange({ amount: parseInt(e.target.value, 10) })
+                          }
+                          className="w-full accent-amber-500"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-2 pt-1">
+                      <PartialExecutionToggle
+                        checked={allowPartial}
+                        onChange={(checked) => onActionConfigChange({ allowPartial: checked })}
+                      />
+                    </div>
+                    {enabledBuildings.silo && ownedArmedSilos.length > 0 && (
+                      <div className="flex items-center gap-1.5 text-[10px] text-red-300/90 font-mono">
+                        <Rocket className="w-3 h-3 shrink-0" />
+                        Ready silo{ownedArmedSilos.length > 1 ? 's' : ''}: click a red silo on the
+                        map ({ownedArmedSilos.map((s) => `(${s.x}, ${s.y})`).join(', ')}), then pick
+                        its target tile.
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* ASSASSINATE */}
+            {activeTab === 'assassinate' && (
+              <div className="flex flex-col gap-2">
+                <div className="text-[11px] text-zinc-300">
+                  <span className="font-semibold text-white">Assassinate:</span>{' '}
+                  {isAssassinationDisabled
+                    ? 'This action is disabled for the current game.'
+                    : `No range limit. Pick a living opponent to deal ${ASSASSINATION_DAMAGE} guaranteed damage for ${assassinationCost} pt.`}
                 </div>
-                <div className="flex items-center justify-between gap-2 pt-1">
-                  <label className="flex items-center gap-1.5 text-[11px] text-zinc-300 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={allowPartial}
-                      onChange={(e) => onActionConfigChange({ allowPartial: e.target.checked })}
-                      className="accent-amber-500"
-                    />
-                    <span>Allow partial execution</span>
-                  </label>
-                  {enabledBuildings.silo && ownedArmedSilos.length > 0 && (
-                    <button
-                      disabled={isClosed || !player.isAlive}
-                      onClick={() =>
-                        onSelectActionType(isNukeTargeting ? 'attack' : 'launch_nuke')
-                      }
-                      className={`px-2.5 py-1.5 rounded text-[11px] font-bold flex items-center gap-1 border transition-all ${
-                        isNukeTargeting
-                          ? 'bg-red-700 text-white border-red-400'
-                          : 'bg-zinc-950 text-red-300 border-red-800/70 hover:bg-red-950/50'
-                      }`}
-                    >
-                      <Rocket className="w-3.5 h-3.5" />
-                      {isNukeTargeting ? 'Nuclear Targeting ON' : 'Enable Nuclear Targeting'}
-                    </button>
-                  )}
-                </div>
+                {!isAssassinationDisabled && (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={assassinationTargetId}
+                        onChange={(e) =>
+                          onActionConfigChange({ assassinationTargetId: e.target.value })
+                        }
+                        className="bg-zinc-950 border border-zinc-700 text-xs text-white rounded px-2 py-1 flex-1"
+                      >
+                        <option value="">Select Target</option>
+                        {assassinationTargets.map((target) => (
+                          <option key={target.id} value={target.id}>
+                            {target.username} ({target.x}, {target.y}) - {target.health} HP
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        disabled={
+                          isClosed || !player.isAlive || !selectedAssassinationTarget
+                        }
+                        onClick={() => handleQueueAction('assassinate')}
+                        className="px-3 py-1 bg-red-600 hover:bg-red-500 text-white rounded text-xs font-bold disabled:opacity-40"
+                      >
+                        Assassinate
+                      </button>
+                    </div>
+                    <div className="text-[10px] text-red-300/90 font-mono">
+                      Fixed cost: {assassinationCost} pt. Damage: {ASSASSINATION_DAMAGE} HP.
+                      Range: unlimited.
+                    </div>
+                    {assassinationTargets.length === 0 && (
+                      <div className="text-[10px] text-zinc-400 font-mono">
+                        No living opponents available.
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
             )}
 
             {/* HEAL */}
             {activeTab === 'heal' && (
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-[11px] text-zinc-300">
-                  <span className="font-semibold text-white">Heal:</span> 1 pt = +1 HP (max 3).
-                  Current HP: {player.health}/3.
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-[11px] text-zinc-300">
+                    <span className="font-semibold text-white">Heal:</span> 1 pt = +1 HP (max{' '}
+                    {maxHealth}). Current HP: {player.health}/{maxHealth}.
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min="1"
+                      max={maxHealth}
+                      value={amount}
+                      onChange={(e) =>
+                        onActionConfigChange({
+                          amount: Math.max(1, parseInt(e.target.value, 10) || 1),
+                        })
+                      }
+                      className="w-12 bg-zinc-950 border border-zinc-700 rounded px-1.5 py-1 text-xs text-white text-center font-mono"
+                    />
+                    <button
+                      disabled={isClosed || !player.isAlive || player.health >= maxHealth}
+                      onClick={() => handleQueueAction('heal')}
+                      className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-bold disabled:opacity-40"
+                    >
+                      Queue Heal
+                    </button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    min="1"
-                    max="3"
-                    value={amount}
-                    onChange={(e) =>
-                      onActionConfigChange({
-                        amount: Math.max(1, parseInt(e.target.value, 10) || 1),
-                      })
-                    }
-                    className="w-12 bg-zinc-950 border border-zinc-700 rounded px-1.5 py-1 text-xs text-white text-center font-mono"
-                  />
-                  <button
-                    disabled={isClosed || !player.isAlive || player.health >= 3}
-                    onClick={() => handleQueueAction('heal')}
-                    className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-bold disabled:opacity-40"
-                  >
-                    Queue Heal
-                  </button>
-                </div>
+                <PartialExecutionToggle
+                  checked={allowPartial}
+                  onChange={(checked) => onActionConfigChange({ allowPartial: checked })}
+                />
               </div>
             )}
 
@@ -424,7 +581,8 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
               <div className="flex flex-col gap-2">
                 <div className="text-[11px] text-zinc-300">
                   <span className="font-semibold text-white">Build:</span> Click a highlighted tile
-                  to build. Click your own bank to claim it as a building action.
+                  in your current range to build. Click your own bank in range to claim it. Queued
+                  moves do not extend building range.
                 </div>
                 <div className="grid grid-cols-4 gap-1.5">
                   {[
@@ -434,16 +592,23 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                     { type: 'bank', label: 'Bank (1 pt)' },
                   ].map((b) => {
                     const isBuildingEnabled = enabledBuildings[b.type as BuildingType];
+                    const isMineAtLimit = b.type === 'mine' && mineLimitReached;
                     return (
                       <button
                         key={b.type}
-                        disabled={!isBuildingEnabled}
+                        disabled={!isBuildingEnabled || isMineAtLimit}
                         onClick={() =>
                           onActionConfigChange({ buildingType: b.type as BuildingType })
                         }
-                        title={isBuildingEnabled ? b.label : `${b.type} is disabled in this game`}
+                        title={
+                          !isBuildingEnabled
+                            ? `${b.type} is disabled in this game`
+                            : isMineAtLimit
+                              ? `Mine limit reached (${minesPlaced}/${mineLimit}). Detonated mines still count.`
+                              : b.label
+                        }
                         className={`p-1.5 md:py-1.5 rounded border text-center text-[10px] font-bold ${
-                          buildingType === b.type && isBuildingEnabled
+                          buildingType === b.type && isBuildingEnabled && !isMineAtLimit
                             ? 'bg-amber-500/20 border-amber-500 text-white'
                             : 'bg-zinc-950 border-zinc-800 text-zinc-400'
                         } disabled:opacity-40 disabled:cursor-not-allowed`}
@@ -453,12 +618,25 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                     );
                   })}
                 </div>
+                {enabledBuildings.mine && (
+                  <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-[10px] font-mono">
+                    <span className={mineLimitReached ? 'text-red-300' : 'text-zinc-400'}>
+                      Mines: {minesPlaced}/{mineLimit} placed
+                      {mineLimitReached ? ' (limit reached)' : ''}
+                    </span>
+                    <span className="text-zinc-500">
+                      {nextMineLimitDay
+                        ? `+1 on Day ${nextMineLimitDay}`
+                        : 'No further increases'}
+                    </span>
+                  </div>
+                )}
                 <div className="flex items-center justify-between pt-1">
                   <span className="text-[10px] font-mono text-zinc-400">
                     Target: {selectedTile ? `(${selectedTile.x}, ${selectedTile.y})` : 'Select tile'}
                   </span>
                   <span className="text-[10px] text-cyan-400 font-mono">
-                    {ghostPosition ? 'Blue = current • Purple = projected' : 'Blue = current range'}
+                    {ghostPosition ? 'Blue = current �?� Purple = projected' : 'Blue = current range'}
                   </span>
                 </div>
               </div>
@@ -469,16 +647,17 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
               <div className="flex flex-col gap-2">
                 <div className="text-[11px] text-zinc-300">
                   <span className="font-semibold text-white">Transfer Points:</span> Click an ally
-                  in range, or pick a recipient below. 1 pt = 1 transferred point.
+                  in your current range, or pick a recipient below. Transfers resolve before
+                  movement, so only the blue current range counts. 1 pt = 1 transferred point.
                 </div>
                 <div className="flex items-center gap-2">
                   <select
-                    value={targetPlayerId}
+                    value={selectedTransferTarget?.id ?? ''}
                     onChange={(e) => onActionConfigChange({ targetPlayerId: e.target.value })}
                     className="bg-zinc-950 border border-zinc-700 text-xs text-white rounded px-2 py-1 flex-1"
                   >
                     <option value="">Select Ally Recipient</option>
-                    {livingTargets.map((t) => (
+                    {transferTargets.map((t) => (
                       <option key={t.id} value={t.id}>
                         {t.username} ({t.x}, {t.y})
                       </option>
@@ -487,7 +666,6 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                   <input
                     type="number"
                     min="1"
-                    max={Math.max(1, player.points)}
                     value={amount}
                     onChange={(e) =>
                       onActionConfigChange({
@@ -495,19 +673,28 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                       })
                     }
                     className="w-12 bg-zinc-950 border border-zinc-700 rounded px-1 py-1 text-xs text-white text-center font-mono"
+                    title="You can plan any amount, even if you do not have enough points yet"
                   />
                   <button
-                    disabled={isClosed || !player.isAlive || livingTargets.length === 0}
+                    disabled={isClosed || !player.isAlive || !selectedTransferTarget}
                     onClick={() => handleQueueAction('send_points')}
                     className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-bold disabled:opacity-40"
                   >
                     Send
                   </button>
                 </div>
+                <PartialExecutionToggle
+                  checked={allowPartial}
+                  onChange={(checked) => onActionConfigChange({ allowPartial: checked })}
+                />
                 <div className="text-[10px] text-cyan-400 font-mono">
-                  {ghostPosition
-                    ? 'Blue = current range • Purple = projected range after moves'
-                    : 'Blue = current range'}
+                  {transferTargets.length === 0
+                    ? 'No living allies in your current range.'
+                    : 'Blue = current range (transfers happen before movement).'}
+                </div>
+                <div className="text-[10px] text-zinc-500">
+                  You can queue a transfer even if you do not have enough points yet
+                  (for example, if an ally is sending points this round).
                 </div>
               </div>
             )}
@@ -537,7 +724,11 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
               <div className="flex flex-col gap-1 max-h-36 overflow-y-auto scrollbar-thin">
                 {sortedActions.map(({ act, originalIndex }, idx) => {
                   const pGroup = getActionPriorityGroup(act.actionType);
-                  const fixed = getFixedActionCost(act.actionType, act.buildingType);
+                  const fixed = getFixedActionCost(
+                    act.actionType,
+                    act.buildingType,
+                    assassinationCost
+                  );
                   const cost = fixed !== null ? fixed : act.amount || 1;
                   const prevGroup =
                     idx > 0
@@ -547,6 +738,10 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                   const targetName = act.targetPlayerId
                     ? allPlayers.find((p) => p.id === act.targetPlayerId)?.username
                     : null;
+                  const nukeSilo =
+                    act.actionType === 'launch_nuke' && act.buildingId
+                      ? buildings.find((b) => b.id === act.buildingId)
+                      : null;
 
                   return (
                     <React.Fragment key={originalIndex}>
@@ -574,6 +769,19 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                           )}
                           {targetName && (
                             <span className="text-blue-300 truncate">→ {targetName}</span>
+                          )}
+                          {nukeSilo && (
+                            <span className="text-red-300 font-mono">
+                              from ({nukeSilo.x}, {nukeSilo.y})
+                            </span>
+                          )}
+                          {act.allowPartial && (
+                            <span
+                              className="text-[8px] font-mono font-bold px-1 rounded bg-amber-950/70 text-amber-300 border border-amber-800/70"
+                              title="Will spend remaining points if the full amount is unaffordable"
+                            >
+                              PARTIAL OK
+                            </span>
                           )}
                           {act.x !== undefined && (
                             <span className="text-zinc-400 font-mono">

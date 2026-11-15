@@ -11,6 +11,7 @@ import {
   Users,
 } from 'lucide-react';
 import { Player, GameStateData } from '../types/game';
+import { DEFAULT_PLAYER_HEALTH } from '../game/rules';
 
 interface PlayerRosterProps {
   allPlayers: Player[];
@@ -18,6 +19,7 @@ interface PlayerRosterProps {
   currentPlayerId?: string;
   inspectedPlayerId?: string | null;
   onHoverPlayer?: (playerId: string | null) => void;
+  maxHealth?: number;
 }
 
 export const PlayerRoster: React.FC<PlayerRosterProps> = ({
@@ -26,6 +28,7 @@ export const PlayerRoster: React.FC<PlayerRosterProps> = ({
   currentPlayerId,
   inspectedPlayerId,
   onHoverPlayer,
+  maxHealth = DEFAULT_PLAYER_HEALTH,
 }) => {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const statePlayers = state?.players || {};
@@ -115,7 +118,7 @@ export const PlayerRoster: React.FC<PlayerRosterProps> = ({
                     {/* Health */}
                     <div className="flex items-center text-[11px] font-mono text-red-400" title="Health">
                       <Heart className="w-3 h-3 mr-0.5 fill-red-500/20" />
-                      <span>{health}/3</span>
+                      <span>{health}/{maxHealth}</span>
                     </div>
 
                     {/* Points */}

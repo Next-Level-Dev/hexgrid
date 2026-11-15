@@ -7,6 +7,7 @@ import { GameEngine } from './engine';
 import {
   GameRecord,
   GameStateRecord,
+  GameStateData,
   Player,
   Phase,
   BuildingType,
@@ -15,8 +16,21 @@ import {
   GAME_RULES,
   ALL_BUILDING_TYPES,
   DEFAULT_MAP_SIZE,
+  DEFAULT_PLAYER_HEALTH,
+  DEFAULT_REWARD_POOL,
+  DEFAULT_MINE_LIMIT,
+  DEFAULT_MINE_LIMIT_INCREASE_DAYS,
+  DEFAULT_ASSASSINATION_COST,
+  ASSASSINATION_COST_MIN,
+  ASSASSINATION_COST_MAX,
   createDefaultBuildingConfig,
   isValidMapSize,
+  isValidPlayerHealth,
+  isValidRewardPool,
+  isValidMineLimit,
+  isValidMineLimitIncreaseDays,
+  isValidAssassinationCost,
+  getRewardPerWinner,
   deterministicShuffle,
   generateSafeSpawnPosition,
 } from '../src/game/rules';
@@ -25,7 +39,12 @@ import { ensureSingleAdmin } from './admin';
 
 export interface StartGameOptions {
   mapSize?: number;
+  playerHealth?: number;
+  rewardPool?: number;
   enabledBuildings?: Partial<Record<BuildingType, boolean>>;
+  mineLimit?: number;
+  mineLimitIncreaseDays?: number;
+  assassinationCost?: number;
 }
 
 export class GameService {
@@ -84,7 +103,12 @@ export class GameService {
       locked: false,
       endReason: 'waiting_to_start',
       mapSize: DEFAULT_MAP_SIZE,
+      playerHealth: DEFAULT_PLAYER_HEALTH,
+      rewardPool: DEFAULT_REWARD_POOL,
       enabledBuildings: createDefaultBuildingConfig(),
+      mineLimit: DEFAULT_MINE_LIMIT,
+      mineLimitIncreaseDays: DEFAULT_MINE_LIMIT_INCREASE_DAYS,
+      assassinationCost: DEFAULT_ASSASSINATION_COST,
     };
     db.createGame(game);
     this.log('info', `Game ${gameId} initialized in closed state (waiting to be started).`);
@@ -103,12 +127,34 @@ export class GameService {
       options.mapSize !== undefined && isValidMapSize(options.mapSize)
         ? options.mapSize
         : DEFAULT_MAP_SIZE;
+    const playerHealth =
+      options.playerHealth !== undefined && isValidPlayerHealth(options.playerHealth)
+        ? options.playerHealth
+        : DEFAULT_PLAYER_HEALTH;
+    const rewardPool =
+      options.rewardPool !== undefined && isValidRewardPool(options.rewardPool)
+        ? options.rewardPool
+        : DEFAULT_REWARD_POOL;
     const enabledBuildings = createDefaultBuildingConfig();
     for (const type of ALL_BUILDING_TYPES) {
       if (typeof options.enabledBuildings?.[type] === 'boolean') {
         enabledBuildings[type] = options.enabledBuildings[type]!;
       }
     }
+    const mineLimit =
+      options.mineLimit !== undefined && isValidMineLimit(options.mineLimit)
+        ? options.mineLimit
+        : DEFAULT_MINE_LIMIT;
+    const mineLimitIncreaseDays =
+      options.mineLimitIncreaseDays !== undefined &&
+      isValidMineLimitIncreaseDays(options.mineLimitIncreaseDays)
+        ? options.mineLimitIncreaseDays
+        : DEFAULT_MINE_LIMIT_INCREASE_DAYS;
+    const assassinationCost =
+      options.assassinationCost !== undefined &&
+      isValidAssassinationCost(options.assassinationCost)
+        ? options.assassinationCost
+        : DEFAULT_ASSASSINATION_COST;
 
     const playersSnapshot: Record<string, any> = {};
     for (const p of allPlayers) {
@@ -117,7 +163,7 @@ export class GameService {
 
       p.x = pos.x;
       p.y = pos.y;
-      p.health = 3;
+      p.health = playerHealth;
       p.points = 1;
       p.isAlive = true;
       p.peaceVote = 'no';
@@ -128,7 +174,7 @@ export class GameService {
         id: p.id,
         username: p.username,
         avatarUrl: p.avatarUrl,
-        health: 3,
+        health: playerHealth,
         points: 1,
         x: pos.x,
         y: pos.y,
@@ -150,7 +196,12 @@ export class GameService {
       locked: false,
       endReason: null,
       mapSize,
+      playerHealth,
+      rewardPool,
       enabledBuildings,
+      mineLimit,
+      mineLimitIncreaseDays,
+      assassinationCost,
     };
     db.createGame(game);
 
@@ -167,6 +218,7 @@ export class GameService {
         playerPriorityOrder: priorityOrder,
         players: playersSnapshot,
         buildings: [],
+        minesPlaced: {},
         events: [],
       },
     };
@@ -174,6 +226,38 @@ export class GameService {
 
     this.log('info', `New game ${gameId} launched on Day 1 with ${allPlayers.length} players!`);
     return game;
+  }
+
+  /**
+   * Awards the current game's reward pool to surviving winners. The pool is
+   * split equally with any remainder discarded (100 / 3 = 33 per winner).
+   */
+  private awardRewardTokens(
+    game: GameRecord,
+    winnerIds: string[],
+    reason: NonNullable<GameRecord['endReason']>
+  ): { pool: number; distributed: number; perWinner: number; winnerCount: number } {
+    const uniqueWinnerIds = Array.from(new Set(winnerIds));
+    const pool = Math.max(0, Math.floor(game.rewardPool || 0));
+    const perWinner = getRewardPerWinner(pool, uniqueWinnerIds.length);
+    let distributed = 0;
+
+    if (perWinner > 0) {
+      for (const playerId of uniqueWinnerIds) {
+        const player = db.getPlayer(playerId);
+        if (!player) continue;
+        player.tokens = Math.max(0, Math.floor(player.tokens || 0)) + perWinner;
+        db.savePlayer(player);
+        distributed += perWinner;
+      }
+    }
+
+    this.log(
+      'info',
+      `Game ${game.id} ended (${reason}). Awarded ${perWinner} token(s) to ${uniqueWinnerIds.length} winner(s) from a ${pool}-token pool (${distributed} distributed).`
+    );
+
+    return { pool, distributed, perWinner, winnerCount: uniqueWinnerIds.length };
   }
 
   /**
@@ -337,6 +421,61 @@ export class GameService {
   }
 
   /**
+   * Reconstructs lifetime mine placements from every stored round. This keeps
+   * mines that were later triggered or destroyed included in the player's
+   * limit, and backfills games created before mine counts were persisted.
+   */
+  private getMineCountsUpTo(
+    gameId: string,
+    upToDay: number,
+    currentState: GameStateData
+  ): Record<string, number> {
+    const stored = currentState.minesPlaced ?? {};
+    const history: Record<string, number> = {};
+    const seenMineIds = new Set<string>();
+
+    for (const record of db.getGameStatesUpTo(gameId, upToDay)) {
+      for (const event of record.data.events ?? []) {
+        if (
+          event.type !== 'build' ||
+          event.buildingType !== 'mine' ||
+          !event.playerId
+        ) {
+          continue;
+        }
+        const key =
+          event.buildingId ??
+          `${event.playerId}:${event.toX ?? '?'},${event.toY ?? '?'}:${event.id}`;
+        if (seenMineIds.has(key)) continue;
+        seenMineIds.add(key);
+        history[event.playerId] = (history[event.playerId] ?? 0) + 1;
+      }
+    }
+
+    const stillOnMap: Record<string, number> = {};
+    for (const building of currentState.buildings) {
+      if (building.type === 'mine') {
+        stillOnMap[building.ownerId] = (stillOnMap[building.ownerId] ?? 0) + 1;
+      }
+    }
+
+    const counts: Record<string, number> = {};
+    const playerIds = new Set([
+      ...Object.keys(stored),
+      ...Object.keys(history),
+      ...Object.keys(stillOnMap),
+    ]);
+    for (const playerId of playerIds) {
+      counts[playerId] = Math.max(
+        stored[playerId] ?? 0,
+        history[playerId] ?? 0,
+        stillOnMap[playerId] ?? 0
+      );
+    }
+    return counts;
+  }
+
+  /**
    * Authoritative, atomic round processing from Day N to Day N+1
    */
   processRound(gameId: string, targetPhase: Phase = 'open'): { success: boolean; error?: string } {
@@ -364,13 +503,24 @@ export class GameService {
       const actions = db.getActionsForDay(gameId, day);
       const nextSeed = Math.floor(Math.random() * 900000) + 100000;
 
+      currentState.data.minesPlaced = this.getMineCountsUpTo(
+        gameId,
+        day,
+        currentState.data
+      );
+
       this.log('info', `Resolving Day ${day} actions (${actions.length} action(s))...`);
       const { nextStateData, events, endReason } = GameEngine.resolveRound(
         currentState.data,
         actions,
         nextSeed,
         game.mapSize,
-        game.enabledBuildings
+        game.enabledBuildings,
+        game.playerHealth,
+        game.mineLimit,
+        game.mineLimitIncreaseDays,
+        day,
+        game.assassinationCost
       );
 
       // Save next Day N+1 state
@@ -402,6 +552,14 @@ export class GameService {
           }
           db.savePlayer(p);
         }
+      }
+
+      // Persistently award tokens to the game's surviving winners.
+      if (endReason) {
+        const winnerIds = Object.values(nextStateData.players)
+          .filter((p) => p.isAlive)
+          .map((p) => p.id);
+        this.awardRewardTokens(game, winnerIds, endReason);
       }
 
       // Update game record
@@ -471,6 +629,202 @@ export class GameService {
       `${buildingType.toUpperCase()} ${enabled ? 'enabled' : 'disabled'} for game ${game.id}.`
     );
     return { success: true, game };
+  }
+
+  /**
+   * Updates the reward pool for the currently active game.
+   */
+  updateRewardPool(rewardPool: number): {
+    success: boolean;
+    error?: string;
+    game?: GameRecord;
+  } {
+    if (!isValidRewardPool(rewardPool)) {
+      return { success: false, error: 'Reward pool must be a whole number of 0 or greater' };
+    }
+
+    const game = db.getCurrentGame();
+    if (!game) return { success: false, error: 'No active game found' };
+    if (game.currentDay === 0 || game.endReason === 'waiting_to_start') {
+      return { success: false, error: 'The game has not started yet.' };
+    }
+    if (game.phase === 'over') {
+      return { success: false, error: 'The game has already concluded.' };
+    }
+
+    game.rewardPool = rewardPool;
+    db.updateGame(game);
+
+    this.log('info', `Reward pool updated to ${rewardPool} tokens for game ${game.id}.`);
+    return { success: true, game };
+  }
+
+  /**
+   * Updates the per-player mine limit and how often it increases. The new
+   * rules apply immediately to the current day and all future rounds.
+   */
+  updateMineRules(
+    mineLimit: number,
+    mineLimitIncreaseDays: number
+  ): { success: boolean; error?: string; game?: GameRecord } {
+    if (!isValidMineLimit(mineLimit)) {
+      return {
+        success: false,
+        error: `Mine limit must be a whole number between 0 and 99`,
+      };
+    }
+    if (!isValidMineLimitIncreaseDays(mineLimitIncreaseDays)) {
+      return {
+        success: false,
+        error: 'Mine limit increase interval must be between 1 and 999 days',
+      };
+    }
+
+    const game = db.getCurrentGame();
+    if (!game) return { success: false, error: 'No active game found' };
+    if (game.currentDay === 0 || game.endReason === 'waiting_to_start') {
+      return { success: false, error: 'The game has not started yet.' };
+    }
+    if (game.phase === 'over') {
+      return { success: false, error: 'The game has already concluded.' };
+    }
+
+    game.mineLimit = mineLimit;
+    game.mineLimitIncreaseDays = mineLimitIncreaseDays;
+    db.updateGame(game);
+
+    this.log(
+      'info',
+      `Mine limit updated to ${mineLimit} per player (+1 every ${mineLimitIncreaseDays} day(s)) for game ${game.id}.`
+    );
+    return { success: true, game };
+  }
+
+  /**
+   * Updates the fixed point cost of assassination. 0 disables the action.
+   */
+  updateAssassinationCost(
+    assassinationCost: number
+  ): { success: boolean; error?: string; game?: GameRecord } {
+    if (!isValidAssassinationCost(assassinationCost)) {
+      return {
+        success: false,
+        error: `Assassination cost must be a whole number between ${ASSASSINATION_COST_MIN} and ${ASSASSINATION_COST_MAX}`,
+      };
+    }
+
+    const game = db.getCurrentGame();
+    if (!game) return { success: false, error: 'No active game found' };
+    if (game.currentDay === 0 || game.endReason === 'waiting_to_start') {
+      return { success: false, error: 'The game has not started yet.' };
+    }
+    if (game.phase === 'over') {
+      return { success: false, error: 'The game has already concluded.' };
+    }
+
+    game.assassinationCost = assassinationCost;
+    db.updateGame(game);
+
+    this.log(
+      'info',
+      assassinationCost === 0
+        ? `Assassination disabled for game ${game.id}.`
+        : `Assassination cost updated to ${assassinationCost} pt(s) for game ${game.id}.`
+    );
+    return { success: true, game };
+  }
+
+  /**
+   * Admin trigger: end the game immediately as World Peace.
+   * The configured reward pool is split equally across surviving winners,
+   * the game is marked over, and stats are updated.
+   */
+  endGameEarly(): {
+    success: boolean;
+    error?: string;
+    game?: GameRecord;
+    distributed?: number;
+    perPlayer?: number;
+  } {
+    const game = db.getCurrentGame();
+    if (!game) return { success: false, error: 'No active game found' };
+    if (game.phase === 'over') {
+      return { success: false, error: 'Current game has already concluded.' };
+    }
+    if (game.currentDay === 0 || game.endReason === 'waiting_to_start') {
+      return { success: false, error: 'The game has not started yet.' };
+    }
+
+    const locked = db.lockGame(game.id);
+    if (!locked) {
+      return { success: false, error: 'Game is currently locked for processing' };
+    }
+
+    try {
+      const state = db.getGameState(game.id, game.currentDay);
+      if (!state) {
+        throw new Error(`State for Day ${game.currentDay} does not exist`);
+      }
+
+      const participants = Object.values(state.data.players);
+      const winnerIds = participants.filter((p) => p.isAlive).map((p) => p.id);
+
+      // Mirror the same stat bookkeeping used by a naturally resolved
+      // World Peace round.
+      const allPlayers = db.getAllPlayers();
+      for (const p of allPlayers) {
+        const snap = state.data.players[p.id];
+        if (snap) {
+          p.stats.gamesPlayed += 1;
+          if (snap.isAlive) p.stats.worldPeaces += 1;
+          db.savePlayer(p);
+        }
+      }
+
+      const reward = this.awardRewardTokens(game, winnerIds, 'world_peace');
+
+      if (reward.pool > 0) {
+        state.data.events = [
+          ...(state.data.events ?? []),
+          {
+            id: uuidv4(),
+            type: 'world_peace',
+            description:
+              reward.winnerCount > 0
+                ? `World Peace declared. The ${reward.pool}-token reward pool was split equally among ${reward.winnerCount} surviving winner(s): ${reward.perWinner} token(s) each.`
+                : `World Peace declared. No surviving winners were available for the ${reward.pool}-token reward pool.`,
+          },
+        ];
+      }
+      db.saveGameState(state);
+
+      const now = new Date();
+      game.phase = 'over';
+      game.endReason = 'world_peace';
+      game.phaseStartedAt = now.toISOString();
+      game.phaseEndsAt = now.toISOString();
+      game.locked = false;
+      db.updateGame(game);
+
+      this.log(
+        'info',
+        `Admin ended Game ${game.id} early with World Peace. ${reward.distributed} of ${reward.pool} token(s) distributed across ${reward.winnerCount} winner(s).`
+      );
+
+      return {
+        success: true,
+        game,
+        distributed: reward.distributed,
+        perPlayer: reward.perWinner,
+      };
+    } catch (err: any) {
+      this.log(
+        'error',
+        `Failed to end game ${game.id} early: ${err?.message || err}`
+      );
+      db.unlockGame(game.id);
+      return { success: false, error: err?.message || 'Failed to end game' };
+    }
   }
 
   /**

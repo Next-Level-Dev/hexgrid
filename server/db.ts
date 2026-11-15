@@ -17,6 +17,11 @@ import {
 import {
   ALL_BUILDING_TYPES,
   DEFAULT_MAP_SIZE,
+  DEFAULT_PLAYER_HEALTH,
+  DEFAULT_REWARD_POOL,
+  DEFAULT_MINE_LIMIT,
+  DEFAULT_MINE_LIMIT_INCREASE_DAYS,
+  DEFAULT_ASSASSINATION_COST,
   createDefaultBuildingConfig
 } from '../src/game/rules';
 
@@ -47,14 +52,36 @@ class GameDatabase {
         locked INTEGER NOT NULL DEFAULT 0,
         end_reason TEXT,
         map_size INTEGER NOT NULL DEFAULT 25,
+        player_health INTEGER NOT NULL DEFAULT 3,
+        reward_pool INTEGER NOT NULL DEFAULT ${DEFAULT_REWARD_POOL},
         enabled_buildings TEXT,
+        mine_limit INTEGER NOT NULL DEFAULT ${DEFAULT_MINE_LIMIT},
+        mine_limit_increase_days INTEGER NOT NULL DEFAULT ${DEFAULT_MINE_LIMIT_INCREASE_DAYS},
+        assassination_cost INTEGER NOT NULL DEFAULT ${DEFAULT_ASSASSINATION_COST},
         created_at TEXT NOT NULL
       );
     `);
 
     // Migrate databases created before per-game settings existed
     this.ensureColumn('games', 'map_size', 'INTEGER NOT NULL DEFAULT 25');
+    this.ensureColumn('games', 'player_health', 'INTEGER NOT NULL DEFAULT 3');
+    this.ensureColumn('games', 'reward_pool', `INTEGER NOT NULL DEFAULT ${DEFAULT_REWARD_POOL}`);
     this.ensureColumn('games', 'enabled_buildings', 'TEXT');
+    this.ensureColumn(
+      'games',
+      'mine_limit',
+      `INTEGER NOT NULL DEFAULT ${DEFAULT_MINE_LIMIT}`
+    );
+    this.ensureColumn(
+      'games',
+      'mine_limit_increase_days',
+      `INTEGER NOT NULL DEFAULT ${DEFAULT_MINE_LIMIT_INCREASE_DAYS}`
+    );
+    this.ensureColumn(
+      'games',
+      'assassination_cost',
+      `INTEGER NOT NULL DEFAULT ${DEFAULT_ASSASSINATION_COST}`
+    );
 
     // Table: game_states
     this.db.exec(`
@@ -88,11 +115,13 @@ class GameDatabase {
         username TEXT NOT NULL,
         avatar_url TEXT NOT NULL,
         is_admin INTEGER NOT NULL DEFAULT 0,
+        tokens INTEGER NOT NULL DEFAULT 0,
         games TEXT NOT NULL,
         stats TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
     `);
+    this.ensureColumn('players', 'tokens', 'INTEGER NOT NULL DEFAULT 0');
 
     // Table: session_cookies
     this.db.exec(`
@@ -187,7 +216,18 @@ class GameDatabase {
       locked: Boolean(row.locked),
       endReason: row.end_reason,
       mapSize: Number(row.map_size) || DEFAULT_MAP_SIZE,
+      playerHealth: Number(row.player_health) || DEFAULT_PLAYER_HEALTH,
+      rewardPool: Number(row.reward_pool) || 0,
       enabledBuildings: config,
+      mineLimit: Number.isFinite(Number(row.mine_limit))
+        ? Math.max(0, Number(row.mine_limit))
+        : DEFAULT_MINE_LIMIT,
+      mineLimitIncreaseDays: Number.isFinite(Number(row.mine_limit_increase_days))
+        ? Math.max(1, Number(row.mine_limit_increase_days))
+        : DEFAULT_MINE_LIMIT_INCREASE_DAYS,
+      assassinationCost: Number.isFinite(Number(row.assassination_cost))
+        ? Math.max(0, Number(row.assassination_cost))
+        : DEFAULT_ASSASSINATION_COST,
     };
   }
 
@@ -210,8 +250,8 @@ class GameDatabase {
 
   createGame(game: GameRecord) {
     const stmt = this.db.prepare(`
-      INSERT INTO games (id, current_day, phase, phase_started_at, phase_ends_at, locked, end_reason, map_size, enabled_buildings, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO games (id, current_day, phase, phase_started_at, phase_ends_at, locked, end_reason, map_size, player_health, reward_pool, enabled_buildings, mine_limit, mine_limit_increase_days, assassination_cost, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       game.id,
@@ -222,7 +262,12 @@ class GameDatabase {
       game.locked ? 1 : 0,
       game.endReason || null,
       game.mapSize,
+      game.playerHealth,
+      game.rewardPool,
       JSON.stringify(game.enabledBuildings),
+      game.mineLimit,
+      game.mineLimitIncreaseDays,
+      game.assassinationCost,
       new Date().toISOString()
     );
   }
@@ -237,7 +282,12 @@ class GameDatabase {
         locked = ?,
         end_reason = ?,
         map_size = ?,
-        enabled_buildings = ?
+        player_health = ?,
+        reward_pool = ?,
+        enabled_buildings = ?,
+        mine_limit = ?,
+        mine_limit_increase_days = ?,
+        assassination_cost = ?
       WHERE id = ?
     `);
     stmt.run(
@@ -248,7 +298,12 @@ class GameDatabase {
       game.locked ? 1 : 0,
       game.endReason || null,
       game.mapSize,
+      game.playerHealth,
+      game.rewardPool,
       JSON.stringify(game.enabledBuildings),
+      game.mineLimit,
+      game.mineLimitIncreaseDays,
+      game.assassinationCost,
       game.id
     );
   }
@@ -396,12 +451,13 @@ class GameDatabase {
 
   savePlayer(player: Player) {
     const stmt = this.db.prepare(`
-      INSERT INTO players (id, username, avatar_url, is_admin, games, stats, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO players (id, username, avatar_url, is_admin, tokens, games, stats, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         username = excluded.username,
         avatar_url = excluded.avatar_url,
         is_admin = excluded.is_admin,
+        tokens = excluded.tokens,
         games = excluded.games,
         stats = excluded.stats
     `);
@@ -410,6 +466,7 @@ class GameDatabase {
       player.username,
       player.avatarUrl,
       player.isAdmin ? 1 : 0,
+      Math.max(0, Math.floor(player.tokens || 0)),
       JSON.stringify(player.games || {}),
       JSON.stringify(player.stats || { gamesPlayed: 0, worldPeaces: 0, lastOneStandings: 0, deaths: 0 }),
       new Date().toISOString()
@@ -423,7 +480,8 @@ class GameDatabase {
       avatarUrl: row.avatar_url,
       isAdmin: Boolean(row.is_admin),
       health: 3, // live health comes from active game state
-      points: 1,
+      points: 1, // live points come from active game state
+      tokens: Math.max(0, Number(row.tokens) || 0),
       x: 0,
       y: 0,
       isAlive: true,
