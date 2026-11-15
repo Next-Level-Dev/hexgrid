@@ -17,8 +17,21 @@
 
 set -Eeuo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+# External deployment script location
+DEPLOY_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+# Actual HexGrid repository location — CHANGE THIS if your repo is elsewhere
+PROJECT_DIR="/home/ubuntu/hexgrid"
+
+# Always run project commands from the repository
+if [[ ! -f "$PROJECT_DIR/package.json" ]]; then
+    echo "ERROR: package.json not found at: $PROJECT_DIR/package.json"
+    echo "Check that PROJECT_DIR points to your HexGrid repository."
+    exit 1
+fi
+
+cd "$PROJECT_DIR"
+SCRIPT_DIR="$PROJECT_DIR"
 
 # ------------------------------------------------------------------------------
 # Configuration (can be overridden through environment variables)
@@ -144,19 +157,42 @@ if [[ -f "$SCRIPT_DIR/scripts/cron-tick.ts" ]] && command -v crontab >/dev/null 
     CRON_MARKER="# HexGrid game turn cycle"
     CRON_JOB="*/5 * * * * cd '$SCRIPT_DIR' && '$BUN_BIN' run scripts/cron-tick.ts >> '$CRON_LOG' 2>&1"
 
+    TEMP_CRON="$(mktemp)"
+
+    # Read existing crontab, or start empty.
     CURRENT_CRON="$(crontab -l 2>/dev/null || true)"
-    # Replace the prior HexGrid marker and its cron line, if present, so an
-    # older npm-based entry is upgraded to the Bun command.
-    UPDATED_CRON="$(printf '%s\\n' "$CURRENT_CRON" | awk -v marker="$CRON_MARKER" '
+
+    # Remove the previous HexGrid marker and its associated job.
+    UPDATED_CRON="$(printf '%s\n' "$CURRENT_CRON" | awk -v marker="$CRON_MARKER" '
         $0 == marker { getline; next }
         { print }
     ')"
+
     log "--- Updating five-minute game tick cron job ---"
+
+    # Write existing entries without adding unnecessary blank lines.
+    if [[ -n "$UPDATED_CRON" ]]; then
+        printf '%s\n' "$UPDATED_CRON" > "$TEMP_CRON"
+    else
+        : > "$TEMP_CRON"
+    fi
+
+    # Append the new marker and cron job.
     {
-        printf '%s\\n' "$UPDATED_CRON"
-        printf '%s\\n' "$CRON_MARKER"
-        printf '%s\\n' "$CRON_JOB"
-    } | crontab -
+        printf '%s\n' "$CRON_MARKER"
+        printf '%s\n' "$CRON_JOB"
+    } >> "$TEMP_CRON"
+
+    # Install the crontab.
+    if crontab "$TEMP_CRON"; then
+        log "Five-minute game tick cron job installed successfully."
+    else
+        rm -f "$TEMP_CRON"
+        log "ERROR: Failed to install game tick cron job."
+        exit 1
+    fi
+
+    rm -f "$TEMP_CRON"
 else
     log "Cron not configured (cron-tick.ts or crontab is unavailable)."
 fi
