@@ -758,6 +758,38 @@ apiRouter.post('/admin/players/:id/reset-sessions', requireAdmin, (req: Authenti
   res.json({ success: true, message: 'All sessions for player revoked' });
 });
 
+apiRouter.delete('/admin/players/:id', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+  const player = db.getPlayer(req.params.id);
+  if (!player) {
+    res.status(404).json({ error: 'Player not found' });
+    return;
+  }
+
+  if (player.isAdmin) {
+    res.status(403).json({
+      error: 'Administrator accounts cannot be deleted from the admin console.',
+    });
+    return;
+  }
+
+  // Keep active games internally consistent: a participating player cannot be
+  // removed while their snapshot is still being resolved.
+  const game = db.getCurrentGame();
+  if (game && game.currentDay > 0 && game.phase !== 'over') {
+    const state = db.getGameState(game.id, game.currentDay);
+    if (state && state.data.players[player.id]) {
+      res.status(409).json({
+        error:
+          'Cannot delete a player who is participating in the active game. Reset or finish the game first.',
+      });
+      return;
+    }
+  }
+
+  db.deletePlayer(player.id);
+  res.json({ success: true, message: `Player ${player.username} deleted` });
+});
+
 apiRouter.post('/admin/start-game', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
   const {
     mapSize,

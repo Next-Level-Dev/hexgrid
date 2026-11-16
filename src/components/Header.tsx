@@ -10,9 +10,11 @@ import {
   Edit3,
   X,
   Check,
+  Languages,
 } from 'lucide-react';
 import { Player, GameRecord } from '../types/game';
 import { DEFAULT_MAP_SIZE, DEFAULT_PLAYER_HEALTH } from '../game/rules';
+import { useI18n } from '../i18n';
 
 interface HeaderProps {
   game: GameRecord | null;
@@ -33,12 +35,24 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenAdmin,
   onProfileUpdated,
 }) => {
+  const { language, toggleLanguage, t } = useI18n();
   const mapSize = game?.mapSize ?? DEFAULT_MAP_SIZE;
   const maxHealth = game?.playerHealth ?? DEFAULT_PLAYER_HEALTH;
   const isUnstarted = !game || game.currentDay === 0 || game.endReason === 'waiting_to_start';
   const isHistorical = game && !isUnstarted ? viewingDay < game.currentDay : false;
   const isClosed = game?.phase === 'closed';
   const isGameOver = game?.phase === 'over';
+  const endReasonLabel = game?.endReason
+    ? (
+        game.endReason === 'world_peace'
+          ? t('World Peace')
+          : game.endReason === 'last_player_standing'
+          ? t('Last One Standing')
+          : game.endReason === 'waiting_to_start'
+          ? t('waiting to start')
+          : ''
+      ).toLocaleUpperCase(language === 'tr' ? 'tr-TR' : 'en-US')
+    : '';
 
   // Profile Edit modal
   const [isEditingProfile, setIsEditingProfile] = useState(false);
@@ -48,7 +62,7 @@ export const Header: React.FC<HeaderProps> = ({
   const [profileError, setProfileError] = useState<string | null>(null);
 
   const formatTimer = (totalSeconds: number) => {
-    if (isUnstarted) return 'WAITING TO LAUNCH';
+    if (isUnstarted) return t('WAITING TO LAUNCH');
     if (isHistorical) return '00:00:00';
     const h = Math.floor(totalSeconds / 3600);
     const m = Math.floor((totalSeconds % 3600) / 60);
@@ -59,7 +73,7 @@ export const Header: React.FC<HeaderProps> = ({
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!profileUsername.trim()) {
-      setProfileError('Username cannot be empty');
+      setProfileError(t('Username cannot be empty'));
       return;
     }
     setIsSavingProfile(true);
@@ -79,10 +93,10 @@ export const Header: React.FC<HeaderProps> = ({
         setIsEditingProfile(false);
         onProfileUpdated();
       } else {
-        setProfileError(data.error || 'Failed to update profile');
+        setProfileError(data.error || t('Failed to update profile'));
       }
     } catch (err: any) {
-      setProfileError(err.message || 'Error updating profile');
+      setProfileError(err.message || t('Error updating profile'));
     } finally {
       setIsSavingProfile(false);
     }
@@ -101,11 +115,13 @@ export const Header: React.FC<HeaderProps> = ({
               <h1 className="text-sm md:text-base font-bold tracking-tight text-white flex items-center gap-1.5 truncate">
                 HEXGRID TACTICS
                 <span className="text-[10px] md:text-xs px-1.5 py-0.5 rounded font-mono bg-zinc-800 text-zinc-300 border border-zinc-700 shrink-0">
-                  {isUnstarted ? 'UNSTARTED' : `DAY ${viewingDay}`}
-                  {game && !isUnstarted && viewingDay !== game.currentDay && ` (Live: Day ${game.currentDay})`}
+                  {isUnstarted ? t('UNSTARTED') : t('DAY {day}', { day: viewingDay })}
+                  {game && !isUnstarted && viewingDay !== game.currentDay && t(' (Live: Day {day})', { day: game.currentDay })}
                 </span>
               </h1>
-              <p className="hidden md:block text-xs text-zinc-400">Turn-based {mapSize}×{mapSize} tactical strategy</p>
+              <p className="hidden md:block text-xs text-zinc-400">
+                {t('Turn-based {size}×{size} tactical strategy', { size: mapSize })}
+              </p>
             </div>
           </div>
         </div>
@@ -137,12 +153,12 @@ export const Header: React.FC<HeaderProps> = ({
                 }`}
               >
                 {isUnstarted
-                  ? 'CLOSED (WAITING TO START)'
+                  ? t('CLOSED (WAITING TO START)')
                   : isGameOver
-                  ? `GAME OVER (${game?.endReason?.replace(/_/g, ' ').toUpperCase()})`
+                  ? t('GAME OVER ({reason})', { reason: endReasonLabel })
                   : isClosed
-                  ? 'CLOSED PHASE (CALCULATING)'
-                  : 'OPEN PHASE (ACTIONS OPEN)'}
+                  ? t('CLOSED PHASE (CALCULATING)')
+                  : t('OPEN PHASE (ACTIONS OPEN)')}
               </span>
             </div>
             <div className="text-lg md:text-2xl font-mono font-extrabold text-white tracking-widest leading-tight">
@@ -150,8 +166,8 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
             <div className="hidden md:block text-[10px] text-zinc-400 font-mono">
               {isUnstarted
-                ? 'Stage operatives before launching Day 1'
-                : 'UTC Daily Cycle (02:00–24:00 Open | 00:00–02:00 Closed)'}
+                ? t('Stage operatives before launching Day 1')
+                : t('UTC Daily Cycle (02:00–24:00 Open | 00:00–02:00 Closed)')}
             </div>
           </div>
         </div>
@@ -172,13 +188,13 @@ export const Header: React.FC<HeaderProps> = ({
                     {player.username}
                   </span>
                   {player.isAdmin && (
-                    <span title="Administrator">
+                    <span title={t('Administrator')}>
                       <Crown className="w-3.5 h-3.5 text-amber-400" />
                     </span>
                   )}
                   {!player.isAlive && !isUnstarted && (
                     <span className="text-[10px] bg-red-950 text-red-400 px-1 rounded font-bold">
-                      DEAD
+                      {t('DEAD')}
                     </span>
                   )}
                   {/* Edit profile button */}
@@ -188,7 +204,7 @@ export const Header: React.FC<HeaderProps> = ({
                       setProfileAvatarUrl(player.avatarUrl);
                       setIsEditingProfile(true);
                     }}
-                    title="Change Profile"
+                    title={t('Change Profile')}
                     className="p-1 rounded text-zinc-400 hover:text-white hover:bg-zinc-800"
                   >
                     <Edit3 className="w-3 h-3" />
@@ -198,22 +214,25 @@ export const Header: React.FC<HeaderProps> = ({
                 {/* Health & Points (if in active game) */}
                 {!isUnstarted ? (
                   <div className="flex items-center gap-2 text-[11px] font-mono">
-                    <span className="flex items-center text-red-400" title={`Health (Max ${maxHealth})`}>
+                    <span
+                      className="flex items-center text-red-400"
+                      title={t('Health (Max {max})', { max: maxHealth })}
+                    >
                       <Heart className="w-3 h-3 mr-0.5 fill-red-500/30" />
                       {player.health}/{maxHealth}
                     </span>
-                    <span className="flex items-center text-amber-300" title="Action Points">
+                    <span className="flex items-center text-amber-300" title={t('Action Points')}>
                       <Coins className="w-3 h-3 mr-0.5 fill-amber-500/30" />
-                      {player.points} pts
+                      {player.points} {t('pts')}
                     </span>
-                    <span className="flex items-center text-cyan-300" title="Persistent Tokens">
+                    <span className="flex items-center text-cyan-300" title={t('Persistent Tokens')}>
                       <Gem className="w-3 h-3 mr-0.5 fill-cyan-500/20" />
-                      {player.tokens} tokens
+                      {player.tokens} {t('tokens')}
                     </span>
                   </div>
                 ) : (
                   <div className="text-[10px] text-zinc-400 font-mono">
-                    Staged for deployment · {player.tokens} tokens
+                    {t('Staged for deployment · {tokens} tokens', { tokens: player.tokens })}
                   </div>
                 )}
               </div>
@@ -223,7 +242,7 @@ export const Header: React.FC<HeaderProps> = ({
                 <button
                   onClick={onTogglePeaceVote}
                   disabled={isClosed}
-                  title="Toggle World Peace Vote"
+                  title={t('Toggle World Peace Vote')}
                   className={`text-xs px-2 py-1.5 rounded-lg border font-medium flex items-center gap-1 transition-colors ${
                     player.peaceVote === 'yes'
                       ? 'bg-emerald-950/80 text-emerald-300 border-emerald-600 hover:bg-emerald-900'
@@ -232,16 +251,26 @@ export const Header: React.FC<HeaderProps> = ({
                 >
                   <Handshake className="w-3.5 h-3.5" />
                   <span className="hidden md:inline">
-                    {player.peaceVote === 'yes' ? 'Peace: YES' : 'Peace: NO'}
+                    {player.peaceVote === 'yes' ? t('Peace: YES') : t('Peace: NO')}
                   </span>
                 </button>
               )}
+
+              {/* Language Toggle */}
+              <button
+                onClick={toggleLanguage}
+                title={t('Switch Language')}
+                className="p-2 rounded-lg bg-zinc-800 text-zinc-300 border border-zinc-700 hover:bg-zinc-700 hover:text-white flex items-center gap-1"
+              >
+                <Languages className="w-4 h-4" />
+                <span className="text-[10px] font-bold">{language.toUpperCase()}</span>
+              </button>
 
               {/* Admin Console (single icon button, all viewports) */}
               {player.isAdmin && (
                 <button
                   onClick={onOpenAdmin}
-                  title="Admin Console"
+                  title={t('Admin Console')}
                   className="p-2 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20"
                 >
                   <ShieldAlert className="w-4 h-4" />
@@ -249,7 +278,17 @@ export const Header: React.FC<HeaderProps> = ({
               )}
             </div>
           ) : (
-            <div className="text-xs text-zinc-400">Not signed in</div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={toggleLanguage}
+                title={t('Switch Language')}
+                className="p-2 rounded-lg bg-zinc-800 text-zinc-300 border border-zinc-700 hover:bg-zinc-700 hover:text-white flex items-center gap-1"
+              >
+                <Languages className="w-4 h-4" />
+                <span className="text-[10px] font-bold">{language.toUpperCase()}</span>
+              </button>
+              <div className="text-xs text-zinc-400">{t('Not signed in')}</div>
+            </div>
           )}
         </div>
       </div>
@@ -263,7 +302,7 @@ export const Header: React.FC<HeaderProps> = ({
           >
             <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
               <h3 className="text-xs font-bold uppercase tracking-wider text-white">
-                Edit Operative Profile
+                {t('Edit Operative Profile')}
               </h3>
               <button
                 type="button"
@@ -281,7 +320,7 @@ export const Header: React.FC<HeaderProps> = ({
             )}
 
             <div>
-              <label className="text-[11px] text-zinc-400 block mb-1">Codename / Username</label>
+              <label className="text-[11px] text-zinc-400 block mb-1">{t('Codename / Username')}</label>
               <input
                 type="text"
                 required
@@ -292,7 +331,7 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
 
             <div>
-              <label className="text-[11px] text-zinc-400 block mb-1">Avatar Image URL</label>
+              <label className="text-[11px] text-zinc-400 block mb-1">{t('Avatar Image URL')}</label>
               <input
                 type="text"
                 value={profileAvatarUrl}
@@ -308,7 +347,7 @@ export const Header: React.FC<HeaderProps> = ({
                 onClick={() => setIsEditingProfile(false)}
                 className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs rounded-lg"
               >
-                Cancel
+                {t('Cancel')}
               </button>
               <button
                 type="submit"
@@ -316,7 +355,7 @@ export const Header: React.FC<HeaderProps> = ({
                 className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg shadow disabled:opacity-50 flex items-center gap-1"
               >
                 <Check className="w-3.5 h-3.5" />
-                {isSavingProfile ? 'Saving...' : 'Save Profile'}
+                {isSavingProfile ? t('Saving...') : t('Save Profile')}
               </button>
             </div>
           </form>

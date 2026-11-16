@@ -1,5 +1,6 @@
 import React from 'react';
 import { Play, FastForward, History, Sparkles, CheckCircle2 } from 'lucide-react';
+import { useI18n } from '../i18n';
 
 interface DaySelectorProps {
   currentDay: number;
@@ -28,6 +29,7 @@ export const DaySelector: React.FC<DaySelectorProps> = ({
   maxVisibleDay,
   isStateReady = true,
 }) => {
+  const { t } = useI18n();
   const highestVisibleDay = Math.max(1, Math.min(currentDay, maxVisibleDay ?? currentDay));
   const days = Array.from({ length: highestVisibleDay }, (_, i) => i + 1);
   const canProgress =
@@ -39,7 +41,7 @@ export const DaySelector: React.FC<DaySelectorProps> = ({
       <div className="flex items-center gap-2 overflow-x-auto w-full md:w-auto pb-1 md:pb-0 scrollbar-thin">
         <div className="flex items-center gap-1.5 text-xs text-zinc-400 font-semibold uppercase tracking-wider shrink-0 mr-1">
           <History className="w-3.5 h-3.5 text-amber-400" />
-          <span className="hidden sm:inline">Timeline:</span>
+          <span className="hidden sm:inline">{t('Timeline:')}</span>
         </div>
         <div className="flex items-center gap-1">
           {days.map((day) => {
@@ -55,7 +57,7 @@ export const DaySelector: React.FC<DaySelectorProps> = ({
                     : 'bg-zinc-800/80 text-zinc-300 hover:bg-zinc-700 hover:text-white border border-zinc-700/50'
                 }`}
               >
-                Day {day}
+                {t('Day {day}', { day })}
                 {isLatest && (
                   <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-emerald-400" />
                 )}
@@ -74,22 +76,24 @@ export const DaySelector: React.FC<DaySelectorProps> = ({
             className="w-full md:w-auto min-h-11 md:min-h-0 flex items-center justify-center gap-2 px-4 py-2 bg-amber-600 hover:bg-amber-500 text-zinc-950 font-bold text-xs uppercase tracking-wider rounded-lg transition-all active:scale-[0.98] disabled:opacity-50"
           >
             <Play className="w-4 h-4 fill-zinc-950" />
-            {isAnimating ? 'Playing Day Animation...' : `Progress to Next Day (Day ${viewingDay + 1})`}
+            {isAnimating
+              ? t('Playing Day Animation...')
+              : t('Progress to Next Day (Day {day})', { day: viewingDay + 1 })}
           </button>
         ) : isClosed ? (
           <div className="flex items-center gap-1.5 text-xs text-amber-300 bg-amber-950/40 border border-amber-800/50 px-3 py-1.5 rounded-lg font-mono">
             <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-            Closed phase — next day unlocks after 02:00 UTC
+            {t('Closed phase — next day unlocks after 02:00 UTC')}
           </div>
         ) : !isStateReady ? (
           <div className="flex items-center gap-1.5 text-xs text-zinc-300 bg-zinc-900/70 border border-zinc-700/60 px-3 py-1.5 rounded-lg font-mono">
             <Sparkles className="w-3.5 h-3.5 text-amber-300" />
-            Loading Day {viewingDay} state...
+            {t('Loading Day {day} state...', { day: viewingDay })}
           </div>
         ) : (
           <div className="flex items-center gap-1.5 text-xs text-emerald-400 bg-emerald-950/40 border border-emerald-800/50 px-3 py-1.5 rounded-lg font-mono">
             <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-            Viewing Live State (Day {viewingDay})
+            {t('Viewing Live State (Day {day})', { day: viewingDay })}
           </div>
         )}
 
@@ -98,10 +102,10 @@ export const DaySelector: React.FC<DaySelectorProps> = ({
             onClick={onPlayFullTimeline}
             disabled={isAnimating}
             className="flex items-center gap-1.5 px-3 py-2 bg-purple-900/60 hover:bg-purple-800 text-purple-200 border border-purple-700 text-xs font-semibold rounded-lg transition-colors"
-            title="Replay entire match timeline from Day 1 to finish"
+            title={t('Replay entire match timeline from Day 1 to finish')}
           >
             <FastForward className="w-3.5 h-3.5" />
-            Full Match Replay
+            {t('Full Match Replay')}
           </button>
         )}
       </div>

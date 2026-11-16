@@ -32,6 +32,7 @@ import {
   getFixedActionCost,
   isSquareInPlayerRange,
 } from '../game/rules';
+import { useI18n } from '../i18n';
 
 export interface ActionConfig {
   amount: number;
@@ -95,6 +96,7 @@ const PartialExecutionToggle: React.FC<{
   checked: boolean;
   onChange: (checked: boolean) => void;
 }> = ({ checked, onChange }) => {
+  const { t } = useI18n();
   const [showHelp, setShowHelp] = useState(false);
 
   return (
@@ -107,14 +109,14 @@ const PartialExecutionToggle: React.FC<{
             onChange={(e) => onChange(e.target.checked)}
             className="accent-amber-500"
           />
-          <span>Allow partial execution</span>
+          <span>{t('Allow partial execution')}</span>
         </label>
         <button
           type="button"
           onClick={() => setShowHelp((cur) => !cur)}
           className="text-zinc-500 hover:text-zinc-300"
-          title="If checked, this action spends whatever points you have left at resolution instead of being cancelled when you cannot afford the full amount."
-          aria-label="Partial execution explanation"
+          title={t('If checked, this action spends whatever points you have left at resolution instead of being cancelled when you cannot afford the full amount.')}
+          aria-label={t('Partial execution explanation')}
           aria-expanded={showHelp}
         >
           <HelpCircle className="w-3 h-3" />
@@ -122,9 +124,7 @@ const PartialExecutionToggle: React.FC<{
       </div>
       {showHelp && (
         <div className="text-[10px] leading-snug text-zinc-400 bg-zinc-950/80 border border-zinc-800 rounded-lg px-2 py-1.5">
-          If checked, this action spends whatever points you have left when it resolves
-          instead of being cancelled because you could not afford the full amount. It
-          never spends more than you have.
+          {t('If checked, this action spends whatever points you have left when it resolves instead of being cancelled because you could not afford the full amount. It never spends more than you have.')}
         </div>
       )}
     </div>
@@ -157,6 +157,7 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
   nextMineLimitDay = null,
   assassinationCost = DEFAULT_ASSASSINATION_COST,
 }) => {
+  const { t, language } = useI18n();
   const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<ActionType>('move');
 
@@ -255,21 +256,21 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
           <button
             onClick={() => setIsCollapsed(!isCollapsed)}
             className="p-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 shrink-0"
-            title={isCollapsed ? 'Expand Action Deck' : 'Collapse Action Deck'}
+            title={isCollapsed ? t('Expand Action Deck') : t('Collapse Action Deck')}
           >
             {isCollapsed ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
           </button>
           <div className="min-w-0">
             <h3 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
-              <span className="truncate">ACTION DECK</span>
+              <span className="truncate">{t('ACTION DECK')}</span>
               <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-zinc-800 text-amber-400 border border-zinc-700 shrink-0">
-                {actions.length} Queued
+                {t('{count} Queued', { count: actions.length })}
               </span>
             </h3>
             {ghostPosition && (
               <div className="text-[10px] text-cyan-400 font-mono flex items-center gap-1">
                 <Footprints className="w-3 h-3" />
-                Projected Pos: ({ghostPosition.x}, {ghostPosition.y})
+                {t('Projected Pos: ({x}, {y})', { x: ghostPosition.x, y: ghostPosition.y })}
               </div>
             )}
           </div>
@@ -283,14 +284,14 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
               : 'bg-zinc-900 text-zinc-200 border-zinc-700'
           }`}
         >
-          <span>Pts: {player.points}</span>
+          <span>{t('Pts: {points}', { points: player.points })}</span>
           <span>•</span>
           <span className={isOverBudget ? 'text-red-400' : 'text-amber-400'}>
-            Cost: {totalCost}
+            {t('Cost: {cost}', { cost: totalCost })}
           </span>
           <span>•</span>
           <span className={remainingPoints < 0 ? 'text-red-400 font-black' : 'text-emerald-400'}>
-            Left: {remainingPoints}
+            {t('Left: {left}', { left: remainingPoints })}
           </span>
         </div>
       </div>
@@ -300,8 +301,7 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
         <div className="bg-red-950/50 border-t border-b border-red-800/60 px-3 py-2 flex items-center gap-2 text-[11px] text-red-300">
           <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
           <span>
-            Your points aren't enough for your currently planned actions — you might want to
-            reconsider, unless someone will send you points this round.
+            {t("Your points aren't enough for your currently planned actions — you might want to reconsider, unless someone will send you points this round.")}
           </span>
         </div>
       )}
@@ -312,13 +312,13 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
           {isClosed && (
             <div className="bg-amber-950/40 border border-amber-800/60 rounded-xl p-2.5 flex items-center gap-2 text-xs text-amber-300">
               <ShieldAlert className="w-4 h-4 shrink-0 text-amber-400" />
-              <span>Closed phase active. Changes locked until 02:00 UTC.</span>
+              <span>{t('Closed phase active. Changes locked until 02:00 UTC.')}</span>
             </div>
           )}
           {!player.isAlive && (
             <div className="bg-red-950/40 border border-red-800/60 rounded-xl p-2.5 flex items-center gap-2 text-xs text-red-300">
               <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
-              <span>Operative eliminated. Actions unavailable.</span>
+              <span>{t('Operative eliminated. Actions unavailable.')}</span>
             </div>
           )}
 
@@ -352,7 +352,7 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                     P{tab.group}
                   </span>
                   <Icon className="w-4 h-4 mb-0.5" />
-                  <span>{tab.label}</span>
+                  <span>{t(tab.label)}</span>
                 </button>
               );
             })}
@@ -365,9 +365,8 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
             {activeTab === 'move' && (
               <div className="flex items-center justify-between gap-2">
                 <div className="text-[11px] text-zinc-300">
-                  <span className="font-semibold text-white">Movement (1 pt):</span> Moves 1 tile.
-                  Click an adjacent highlighted tile or use the D-pad. Your ghost updates after
-                  every queued move.
+                  <span className="font-semibold text-white">{t('Movement (1 pt):')}</span>{' '}
+                  {t('Moves 1 tile. Click an adjacent highlighted tile or use the D-pad. Your ghost updates after every queued move.')}
                 </div>
                 {/* D-Pad */}
                 <div className="grid grid-cols-3 gap-1 w-28 md:w-28 shrink-0">
@@ -376,7 +375,7 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                     disabled={isClosed || !player.isAlive}
                     onClick={() => handleQueueAction('move', { direction: 'up' })}
                     className="p-2 md:p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded flex items-center justify-center text-zinc-200 active:bg-zinc-600"
-                    title="Move Up"
+                    title={t('Move Up')}
                   >
                     <ArrowUp className="w-4 h-4 md:w-3.5 md:h-3.5" />
                   </button>
@@ -385,18 +384,18 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                     disabled={isClosed || !player.isAlive}
                     onClick={() => handleQueueAction('move', { direction: 'left' })}
                     className="p-2 md:p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded flex items-center justify-center text-zinc-200 active:bg-zinc-600"
-                    title="Move Left"
+                    title={t('Move Left')}
                   >
                     <ArrowLeft className="w-4 h-4 md:w-3.5 md:h-3.5" />
                   </button>
                   <div className="flex items-center justify-center text-[9px] font-mono text-zinc-500">
-                    1 pt
+                    {t('1 pt')}
                   </div>
                   <button
                     disabled={isClosed || !player.isAlive}
                     onClick={() => handleQueueAction('move', { direction: 'right' })}
                     className="p-2 md:p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded flex items-center justify-center text-zinc-200 active:bg-zinc-600"
-                    title="Move Right"
+                    title={t('Move Right')}
                   >
                     <ArrowRight className="w-4 h-4 md:w-3.5 md:h-3.5" />
                   </button>
@@ -405,7 +404,7 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                     disabled={isClosed || !player.isAlive}
                     onClick={() => handleQueueAction('move', { direction: 'down' })}
                     className="p-2 md:p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded flex items-center justify-center text-zinc-200 active:bg-zinc-600"
-                    title="Move Down"
+                    title={t('Move Down')}
                   >
                     <ArrowDown className="w-4 h-4 md:w-3.5 md:h-3.5" />
                   </button>
@@ -419,26 +418,29 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
               <div className="flex flex-col gap-2">
                 <div className="text-[11px] text-zinc-300">
                   <span className="font-semibold text-white">
-                    {isNukeTargeting ? 'Nuclear Strike:' : 'Strike:'}
+                    {isNukeTargeting ? t('Nuclear Strike:') : t('Strike:')}
                   </span>{' '}
                   {isNukeTargeting
                     ? selectedNukeSilo
-                      ? `Silo at (${selectedNukeSilo.x}, ${selectedNukeSilo.y}) selected. Click any tile to assign its target; it launches next round.`
-                      : 'Click a ready silo on the map to select its launch target.'
-                    : 'Click a highlighted tile to strike. 1 pt = 1 damage. Current range is blue; projected range after moves is purple (attacks only).'}
+                      ? t('Silo at ({x}, {y}) selected. Click any tile to assign its target; it launches next round.', {
+                          x: selectedNukeSilo.x,
+                          y: selectedNukeSilo.y,
+                        })
+                      : t('Click a ready silo on the map to select its launch target.')
+                    : t('Click a highlighted tile to strike. 1 pt = 1 damage. Current range is blue; projected range after moves is purple (attacks only).')}
                 </div>
                 {isNukeTargeting ? (
                   <div className="grid grid-cols-2 gap-2 items-center">
                     <div>
-                      <label className="text-[10px] text-zinc-400 block mb-0.5">Target Tile:</label>
+                      <label className="text-[10px] text-zinc-400 block mb-0.5">{t('Target Tile:')}</label>
                       <div className="text-xs font-mono font-bold text-amber-300 bg-zinc-950 border border-zinc-700 px-2 py-1 rounded">
-                        {selectedTile ? `(${selectedTile.x}, ${selectedTile.y})` : 'Click tile on map'}
+                        {selectedTile ? `(${selectedTile.x}, ${selectedTile.y})` : t('Click tile on map')}
                       </div>
                     </div>
                     <div className="text-[10px] text-red-300/90 font-mono leading-tight">
-                      Fixed launch cost: {GAME_RULES.BUILDINGS.silo.launchCost} pt.
+                      {t('Fixed launch cost: {cost} pt.', { cost: GAME_RULES.BUILDINGS.silo.launchCost })}
                       <br />
-                      The selected armed silo is consumed on launch.
+                      {t('The selected armed silo is consumed on launch.')}
                     </div>
                   </div>
                 ) : (
@@ -446,17 +448,17 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                     <div className="grid grid-cols-2 gap-2 items-center">
                       <div>
                         <label className="text-[10px] text-zinc-400 block mb-0.5">
-                          Target Tile:
+                          {t('Target Tile:')}
                         </label>
                         <div className="text-xs font-mono font-bold text-amber-300 bg-zinc-950 border border-zinc-700 px-2 py-1 rounded">
                           {selectedTile
                             ? `(${selectedTile.x}, ${selectedTile.y})`
-                            : 'Click tile on map'}
+                            : t('Click tile on map')}
                         </div>
                       </div>
                       <div>
                         <label className="text-[10px] text-zinc-400 block mb-0.5">
-                          Points ({amount}):
+                          {t('Points ({points}):', { points: amount })}
                         </label>
                         <input
                           type="range"
@@ -479,9 +481,10 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                     {enabledBuildings.silo && ownedArmedSilos.length > 0 && (
                       <div className="flex items-center gap-1.5 text-[10px] text-red-300/90 font-mono">
                         <Rocket className="w-3 h-3 shrink-0" />
-                        Ready silo{ownedArmedSilos.length > 1 ? 's' : ''}: click a red silo on the
-                        map ({ownedArmedSilos.map((s) => `(${s.x}, ${s.y})`).join(', ')}), then pick
-                        its target tile.
+                        {t('Ready silo{plural}: click a red silo on the map ({positions}), then pick its target tile.', {
+                          plural: ownedArmedSilos.length > 1 ? 's' : '',
+                          positions: ownedArmedSilos.map((s) => `(${s.x}, ${s.y})`).join(', '),
+                        })}
                       </div>
                     )}
                   </>
@@ -493,10 +496,13 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
             {activeTab === 'assassinate' && (
               <div className="flex flex-col gap-2">
                 <div className="text-[11px] text-zinc-300">
-                  <span className="font-semibold text-white">Assassinate:</span>{' '}
+                  <span className="font-semibold text-white">{t('Assassinate:')}</span>{' '}
                   {isAssassinationDisabled
-                    ? 'This action is disabled for the current game.'
-                    : `No range limit. Pick a living opponent to deal ${ASSASSINATION_DAMAGE} guaranteed damage for ${assassinationCost} pt.`}
+                    ? t('This action is disabled for the current game.')
+                    : t('No range limit. Pick a living opponent to deal {damage} guaranteed damage for {cost} pt.', {
+                        damage: ASSASSINATION_DAMAGE,
+                        cost: assassinationCost,
+                      })}
                 </div>
                 {!isAssassinationDisabled && (
                   <>
@@ -508,7 +514,7 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                         }
                         className="bg-zinc-950 border border-zinc-700 text-xs text-white rounded px-2 py-1 flex-1"
                       >
-                        <option value="">Select Target</option>
+                        <option value="">{t('Select Target')}</option>
                         {assassinationTargets.map((target) => (
                           <option key={target.id} value={target.id}>
                             {target.username} ({target.x}, {target.y}) - {target.health} HP
@@ -522,16 +528,18 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                         onClick={() => handleQueueAction('assassinate')}
                         className="px-3 py-1 bg-red-600 hover:bg-red-500 text-white rounded text-xs font-bold disabled:opacity-40"
                       >
-                        Assassinate
+                        {t('Assassinate')}
                       </button>
                     </div>
                     <div className="text-[10px] text-red-300/90 font-mono">
-                      Fixed cost: {assassinationCost} pt. Damage: {ASSASSINATION_DAMAGE} HP.
-                      Range: unlimited.
+                      {t('Fixed cost: {cost} pt. Damage: {damage} HP. Range: unlimited.', {
+                        cost: assassinationCost,
+                        damage: ASSASSINATION_DAMAGE,
+                      })}
                     </div>
                     {assassinationTargets.length === 0 && (
                       <div className="text-[10px] text-zinc-400 font-mono">
-                        No living opponents available.
+                        {t('No living opponents available.')}
                       </div>
                     )}
                   </>
@@ -544,8 +552,11 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
               <div className="flex flex-col gap-2">
                 <div className="flex items-center justify-between gap-2">
                   <div className="text-[11px] text-zinc-300">
-                    <span className="font-semibold text-white">Heal:</span> 1 pt = +1 HP (max{' '}
-                    {maxHealth}). Current HP: {player.health}/{maxHealth}.
+                    <span className="font-semibold text-white">{t('Heal:')}</span>{' '}
+                    {t('1 pt = +1 HP (max {max}). Current HP: {health}/{max}.', {
+                      max: maxHealth,
+                      health: player.health,
+                    })}
                   </div>
                   <div className="flex items-center gap-2">
                     <input
@@ -565,7 +576,7 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                       onClick={() => handleQueueAction('heal')}
                       className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-bold disabled:opacity-40"
                     >
-                      Queue Heal
+                      {t('Queue Heal')}
                     </button>
                   </div>
                 </div>
@@ -580,9 +591,8 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
             {activeTab === 'build' && (
               <div className="flex flex-col gap-2">
                 <div className="text-[11px] text-zinc-300">
-                  <span className="font-semibold text-white">Build:</span> Click a highlighted tile
-                  in your current range to build. Click your own bank in range to claim it. Queued
-                  moves do not extend building range.
+                  <span className="font-semibold text-white">{t('Build:')}</span>{' '}
+                  {t('Click a highlighted tile in your current range to build. Click your own bank in range to claim it. Queued moves do not extend building range.')}
                 </div>
                 <div className="grid grid-cols-4 gap-1.5">
                   {[
@@ -602,10 +612,13 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                         }
                         title={
                           !isBuildingEnabled
-                            ? `${b.type} is disabled in this game`
+                            ? t('{type} is disabled in this game', { type: t(b.type) })
                             : isMineAtLimit
-                              ? `Mine limit reached (${minesPlaced}/${mineLimit}). Detonated mines still count.`
-                              : b.label
+                              ? t('Mine limit reached ({placed}/{limit}). Detonated mines still count.', {
+                                  placed: minesPlaced,
+                                  limit: mineLimit,
+                                })
+                              : t(b.label)
                         }
                         className={`p-1.5 md:py-1.5 rounded border text-center text-[10px] font-bold ${
                           buildingType === b.type && isBuildingEnabled && !isMineAtLimit
@@ -613,7 +626,7 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                             : 'bg-zinc-950 border-zinc-800 text-zinc-400'
                         } disabled:opacity-40 disabled:cursor-not-allowed`}
                       >
-                        {b.label}
+                        {t(b.label)}
                       </button>
                     );
                   })}
@@ -621,22 +634,29 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                 {enabledBuildings.mine && (
                   <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-[10px] font-mono">
                     <span className={mineLimitReached ? 'text-red-300' : 'text-zinc-400'}>
-                      Mines: {minesPlaced}/{mineLimit} placed
-                      {mineLimitReached ? ' (limit reached)' : ''}
+                      {t('Mines: {placed}/{limit} placed', {
+                        placed: minesPlaced,
+                        limit: mineLimit,
+                      })}
+                      {mineLimitReached ? t(' (limit reached)') : ''}
                     </span>
                     <span className="text-zinc-500">
                       {nextMineLimitDay
-                        ? `+1 on Day ${nextMineLimitDay}`
-                        : 'No further increases'}
+                        ? t('+1 on Day {day}', { day: nextMineLimitDay })
+                        : t('No further increases')}
                     </span>
                   </div>
                 )}
                 <div className="flex items-center justify-between pt-1">
                   <span className="text-[10px] font-mono text-zinc-400">
-                    Target: {selectedTile ? `(${selectedTile.x}, ${selectedTile.y})` : 'Select tile'}
+                    {t('Target: {target}', {
+                      target: selectedTile
+                        ? `(${selectedTile.x}, ${selectedTile.y})`
+                        : t('Select tile'),
+                    })}
                   </span>
                   <span className="text-[10px] text-cyan-400 font-mono">
-                    {ghostPosition ? 'Blue = current �?� Purple = projected' : 'Blue = current range'}
+                    {ghostPosition ? t('Blue = current · Purple = projected') : t('Blue = current range')}
                   </span>
                 </div>
               </div>
@@ -646,9 +666,8 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
             {activeTab === 'send_points' && (
               <div className="flex flex-col gap-2">
                 <div className="text-[11px] text-zinc-300">
-                  <span className="font-semibold text-white">Transfer Points:</span> Click an ally
-                  in your current range, or pick a recipient below. Transfers resolve before
-                  movement, so only the blue current range counts. 1 pt = 1 transferred point.
+                  <span className="font-semibold text-white">{t('Transfer Points:')}</span>{' '}
+                  {t('Click an ally in your current range, or pick a recipient below. Transfers resolve before movement, so only the blue current range counts. 1 pt = 1 transferred point.')}
                 </div>
                 <div className="flex items-center gap-2">
                   <select
@@ -656,7 +675,7 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                     onChange={(e) => onActionConfigChange({ targetPlayerId: e.target.value })}
                     className="bg-zinc-950 border border-zinc-700 text-xs text-white rounded px-2 py-1 flex-1"
                   >
-                    <option value="">Select Ally Recipient</option>
+                    <option value="">{t('Select Ally Recipient')}</option>
                     {transferTargets.map((t) => (
                       <option key={t.id} value={t.id}>
                         {t.username} ({t.x}, {t.y})
@@ -673,14 +692,14 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                       })
                     }
                     className="w-12 bg-zinc-950 border border-zinc-700 rounded px-1 py-1 text-xs text-white text-center font-mono"
-                    title="You can plan any amount, even if you do not have enough points yet"
+                    title={t('You can plan any amount, even if you do not have enough points yet')}
                   />
                   <button
                     disabled={isClosed || !player.isAlive || !selectedTransferTarget}
                     onClick={() => handleQueueAction('send_points')}
                     className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-bold disabled:opacity-40"
                   >
-                    Send
+                    {t('Send')}
                   </button>
                 </div>
                 <PartialExecutionToggle
@@ -689,36 +708,35 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                 />
                 <div className="text-[10px] text-cyan-400 font-mono">
                   {transferTargets.length === 0
-                    ? 'No living allies in your current range.'
-                    : 'Blue = current range (transfers happen before movement).'}
+                    ? t('No living allies in your current range.')
+                    : t('Blue = current range (transfers happen before movement).')}
                 </div>
                 <div className="text-[10px] text-zinc-500">
-                  You can queue a transfer even if you do not have enough points yet
-                  (for example, if an ally is sending points this round).
+                  {t('You can queue a transfer even if you do not have enough points yet (for example, if an ally is sending points this round).')}
                 </div>
               </div>
             )}
           </div>
           ) : (
             <div className="bg-zinc-900/40 border border-dashed border-zinc-800 rounded-xl p-3 text-center text-[11px] text-zinc-500">
-              Select an action above to plan it. Click the selected action again to deselect.
+              {t('Select an action above to plan it. Click the selected action again to deselect.')}
             </div>
           )}
 
           {/* Queued Action Items */}
           <div className="flex flex-col gap-1.5">
             <div className="text-[11px] font-semibold text-zinc-300 flex items-center justify-between">
-              <span>Resolution Sequence (Priorities 1→5):</span>
+              <span>{t('Resolution Sequence (Priorities 1→5):')}</span>
               {saveSuccess && (
                 <span className="text-emerald-400 flex items-center gap-1 text-[10px]">
-                  <CheckCircle className="w-3 h-3" /> Saved on server
+                  <CheckCircle className="w-3 h-3" /> {t('Saved on server')}
                 </span>
               )}
             </div>
 
             {actions.length === 0 ? (
               <div className="text-center py-4 text-zinc-500 text-[11px] border border-dashed border-zinc-800 rounded-lg">
-                No planned actions yet. Click highlighted map tiles or use the controls above.
+                {t('No planned actions yet. Click highlighted map tiles or use the controls above.')}
               </div>
             ) : (
               <div className="flex flex-col gap-1 max-h-36 overflow-y-auto scrollbar-thin">
@@ -751,7 +769,7 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                             P{pGroup}
                           </span>
                           <span className="text-[9px] font-bold tracking-wider text-zinc-400">
-                            {GROUP_LABELS[pGroup]}
+                            {t(GROUP_LABELS[pGroup])}
                           </span>
                           <span className="flex-1 h-px bg-zinc-800" />
                         </div>
@@ -759,28 +777,30 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                       <div className="flex items-center justify-between bg-zinc-900 px-2.5 py-1.5 rounded-lg border border-zinc-800 text-xs">
                         <div className="flex items-center gap-1.5 min-w-0">
                           <span className="font-semibold text-zinc-200 truncate">
-                            {act.actionType.toUpperCase().replace(/_/g, ' ')}
+                            {t(act.actionType.replace(/_/g, ' ')).toLocaleUpperCase(
+                              language === 'tr' ? 'tr-TR' : 'en-US'
+                            )}
                           </span>
                           {act.direction && (
-                            <span className="text-zinc-400 font-mono">({act.direction})</span>
+                            <span className="text-zinc-400 font-mono">({t(act.direction)})</span>
                           )}
                           {act.buildingType && (
-                            <span className="text-zinc-400">[{act.buildingType}]</span>
+                            <span className="text-zinc-400">[{t(act.buildingType)}]</span>
                           )}
                           {targetName && (
                             <span className="text-blue-300 truncate">→ {targetName}</span>
                           )}
                           {nukeSilo && (
                             <span className="text-red-300 font-mono">
-                              from ({nukeSilo.x}, {nukeSilo.y})
+                              {t('from ({x}, {y})', { x: nukeSilo.x, y: nukeSilo.y })}
                             </span>
                           )}
                           {act.allowPartial && (
                             <span
                               className="text-[8px] font-mono font-bold px-1 rounded bg-amber-950/70 text-amber-300 border border-amber-800/70"
-                              title="Will spend remaining points if the full amount is unaffordable"
+                              title={t('Will spend remaining points if the full amount is unaffordable')}
                             >
-                              PARTIAL OK
+                              {t('PARTIAL OK')}
                             </span>
                           )}
                           {act.x !== undefined && (
@@ -791,7 +811,9 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
                         </div>
 
                         <div className="flex items-center gap-2 shrink-0">
-                          <span className="font-mono text-zinc-400 text-[11px]">{cost} pt</span>
+                          <span className="font-mono text-zinc-400 text-[11px]">
+                            {t('{cost} pt', { cost })}
+                          </span>
                           <button
                             disabled={isClosed}
                             onClick={() => onRemoveAction(originalIndex)}
@@ -811,14 +833,14 @@ export const ActionPlanner: React.FC<ActionPlannerProps> = ({
           {/* Submit Action */}
           <div className="flex items-center justify-between border-t border-zinc-800/80 pt-2.5">
             <span className="text-[10px] text-zinc-500">
-              Resolved by priority group, then round seed.
+              {t('Resolved by priority group, then round seed.')}
             </span>
             <button
               onClick={onSubmitActions}
               disabled={isClosed || !player.isAlive || isSaving}
               className="min-h-11 px-4 py-2 bg-amber-600 hover:bg-amber-500 text-zinc-950 font-bold text-xs uppercase tracking-wider rounded-xl disabled:opacity-40 transition-all active:scale-[0.98]"
             >
-              {isSaving ? 'Submitting...' : 'Confirm Planned Actions'}
+              {isSaving ? t('Submitting...') : t('Confirm Planned Actions')}
             </button>
           </div>
         </div>

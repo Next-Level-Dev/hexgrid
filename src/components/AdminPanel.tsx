@@ -15,8 +15,10 @@ import {
   Key,
   Handshake,
   AlertTriangle,
+  Trash2,
 } from 'lucide-react';
 import { Player, GameRecord, BuildingType } from '../types/game';
+import { useI18n } from '../i18n';
 import {
   ALL_BUILDING_TYPES,
   DEFAULT_MAP_SIZE,
@@ -80,6 +82,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   onEndGameWorldPeace,
   isProcessing,
 }) => {
+  const { t, language } = useI18n();
+  const upper = (value: string) =>
+    value.toLocaleUpperCase(language === 'tr' ? 'tr-TR' : 'en-US');
   // Create player form state
   const [newUsername, setNewUsername] = useState('');
   const [newAvatarUrl, setNewAvatarUrl] = useState('');
@@ -91,6 +96,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [authLinks, setAuthLinks] = useState<Record<string, { token: string; url: string; expiresAt: string }>>({});
   const [copiedPlayerId, setCopiedPlayerId] = useState<string | null>(null);
   const [generatingLinkForId, setGeneratingLinkForId] = useState<string | null>(null);
+  const [deletingPlayerId, setDeletingPlayerId] = useState<string | null>(null);
 
   // Edit player state
   const [editingPlayerId, setEditingPlayerId] = useState<string | null>(null);
@@ -125,10 +131,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     createDefaultBuildingConfig()
   );
 
-  // Early world-peace flow: 5s hold, then a yes-clicked-twice confirmation.
+  // Destructive actions use a 5s hold followed by a two-click confirmation.
+  type DangerousAction = 'world_peace' | 'reset';
   const [holdProgress, setHoldProgress] = useState<number>(0);
-  const [showEndPrompt, setShowEndPrompt] = useState<boolean>(false);
-  const [endConfirmStep, setEndConfirmStep] = useState<number>(0);
+  const [holdingAction, setHoldingAction] = useState<DangerousAction | null>(null);
+  const [pendingAction, setPendingAction] = useState<DangerousAction | null>(null);
+  const [confirmStep, setConfirmStep] = useState<number>(0);
   const holdIntervalRef = useRef<number | null>(null);
 
   const stopHold = () => {
@@ -137,6 +145,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       holdIntervalRef.current = null;
     }
     setHoldProgress(0);
+    setHoldingAction(null);
   };
 
   useEffect(() => {
@@ -151,8 +160,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   useEffect(() => {
     if (!isOpen) {
       stopHold();
-      setShowEndPrompt(false);
-      setEndConfirmStep(0);
+      setPendingAction(null);
+      setConfirmStep(0);
     }
   }, [isOpen]);
 
@@ -199,35 +208,37 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const assassinationCostChanged =
     !isStagingNextGame && activeAssassinationCost !== game?.assassinationCost;
 
-  const startHold = () => {
-    if (isUnstarted || isGameOver || isProcessing || showEndPrompt) return;
-    if (holdIntervalRef.current !== null) return;
+  const startHold = (action: DangerousAction) => {
+    if (isProcessing || pendingAction || holdIntervalRef.current !== null) return;
 
+    setHoldingAction(action);
     const startedAt = Date.now();
     holdIntervalRef.current = window.setInterval(() => {
       const progress = Math.min(100, ((Date.now() - startedAt) / 5000) * 100);
       setHoldProgress(progress);
       if (progress >= 100) {
         stopHold();
-        setEndConfirmStep(0);
-        setShowEndPrompt(true);
+        setConfirmStep(0);
+        setPendingAction(action);
       }
     }, 50);
   };
 
-  const handleConfirmEnd = () => {
-    if (endConfirmStep === 0) {
-      setEndConfirmStep(1);
+  const handleConfirmDangerous = () => {
+    if (confirmStep === 0) {
+      setConfirmStep(1);
       return;
     }
-    setShowEndPrompt(false);
-    setEndConfirmStep(0);
-    onEndGameWorldPeace();
+    const action = pendingAction;
+    setPendingAction(null);
+    setConfirmStep(0);
+    if (action === 'world_peace') onEndGameWorldPeace();
+    else if (action === 'reset') onResetGame();
   };
 
-  const cancelEndPrompt = () => {
-    setShowEndPrompt(false);
-    setEndConfirmStep(0);
+  const cancelDangerousPrompt = () => {
+    setPendingAction(null);
+    setConfirmStep(0);
   };
 
   const handleBuildingToggle = (type: BuildingType) => {
@@ -256,16 +267,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       });
       const data = await res.json();
       if (res.ok) {
-        setCreateSuccessMsg(`Player "${data.player.username}" created successfully.`);
+        setCreateSuccessMsg(
+          t('Player "{name}" created successfully.', { name: data.player.username })
+        );
         setNewUsername('');
         setNewAvatarUrl('');
         onPlayerUpdated();
         setTimeout(() => setCreateSuccessMsg(null), 4000);
       } else {
-        setCreateErrorMsg(data.error || 'Failed to create player');
+        setCreateErrorMsg(data.error || t('Failed to create player'));
       }
     } catch (err: any) {
-      setCreateErrorMsg(err.message || 'Error creating player');
+      setCreateErrorMsg(err.message || t('Error creating player'));
     } finally {
       setIsCreatingPlayer(false);
     }
@@ -290,10 +303,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           },
         }));
       } else {
-        alert(data.error || 'Failed to generate auth link');
+        alert(data.error || t('Failed to generate auth link'));
       }
     } catch (err: any) {
-      alert(err.message || 'Error generating auth link');
+      alert(err.message || t('Error generating auth link'));
     } finally {
       setGeneratingLinkForId(null);
     }
@@ -315,22 +328,59 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         onPlayerUpdated();
       } else {
         const data = await res.json();
-        alert(data.error || 'Failed to update player');
+        alert(data.error || t('Failed to update player'));
       }
     } catch (err: any) {
-      alert(err.message || 'Failed to update player');
+      alert(err.message || t('Failed to update player'));
     } finally {
       setIsSavingEdit(false);
     }
   };
 
   const handleResetSessions = async (playerId: string) => {
-    if (!confirm('Revoke all sessions for this player?')) return;
+    if (!confirm(t('Revoke all sessions for this player?'))) return;
     try {
       await fetch(`/api/admin/players/${playerId}/reset-sessions`, { method: 'POST' });
-      alert('All sessions for player revoked.');
+      alert(t('All sessions for player revoked.'));
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  const handleDeletePlayer = async (player: Player) => {
+    if (
+      !confirm(
+        t('Delete operative "{name}"? This permanently removes the player.', {
+          name: player.username,
+        })
+      )
+    ) {
+      return;
+    }
+    if (
+      !confirm(
+        t(
+          'Are you absolutely sure? "{name}" and all their sessions/invites will be permanently deleted. This cannot be undone.',
+          { name: player.username }
+        )
+      )
+    ) {
+      return;
+    }
+
+    setDeletingPlayerId(player.id);
+    try {
+      const res = await fetch(`/api/admin/players/${player.id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (res.ok) {
+        onPlayerUpdated();
+      } else {
+        alert(data.error || t('Failed to delete player'));
+      }
+    } catch (err: any) {
+      alert(err.message || t('Failed to delete player'));
+    } finally {
+      setDeletingPlayerId(null);
     }
   };
 
@@ -359,7 +409,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           <div className="flex items-center gap-2">
             <ShieldAlert className="w-5 h-5 text-amber-400" />
             <h3 className="text-sm font-bold text-white uppercase tracking-wider">
-              ADMINISTRATIVE COMMAND CONSOLE
+              {t('ADMINISTRATIVE COMMAND CONSOLE')}
             </h3>
           </div>
           <button
@@ -374,28 +424,33 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex flex-col gap-3">
           <div className="flex items-center justify-between">
             <h4 className="text-xs font-bold uppercase tracking-wider text-amber-300">
-              Game Lifecycle & Operational Triggers
+              {t('Game Lifecycle & Operational Triggers')}
             </h4>
             <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 border border-zinc-700">
-              {isUnstarted ? 'STATUS: CLOSED (UNSTARTED)' : `STATUS: DAY ${game?.currentDay} (${game?.phase.toUpperCase()})`}
+              {isUnstarted
+                ? t('STATUS: CLOSED (UNSTARTED)')
+                : t('STATUS: DAY {day} ({phase})', {
+                    day: game?.currentDay ?? 0,
+                    phase: upper(t(game?.phase ?? '')),
+                  })}
             </span>
           </div>
 
           <p className="text-xs text-zinc-400">
             {isUnstarted
-              ? 'The game is currently unstarted. When all operatives are provisioned, launch Day 1 to spawn all players.'
-              : 'The game is active. Resolve the current day to calculate planned actions and advance to the next day, or reset back to unstarted.'}
+              ? t('The game is currently unstarted. When all operatives are provisioned, launch Day 1 to spawn all players.')
+              : t('The game is active. Resolve the current day to calculate planned actions and advance to the next day, or reset back to unstarted.')}
           </p>
 
           {/* Per-game settings */}
           <div className="bg-zinc-950/60 border border-zinc-800 rounded-lg p-3 flex flex-col gap-2.5">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <div className="text-[11px] font-bold text-zinc-200">Map Size</div>
+                <div className="text-[11px] font-bold text-zinc-200">{t('Map Size')}</div>
                 <div className="text-[10px] text-zinc-500">
                   {isStagingNextGame
-                    ? 'Choose the board size for the next game.'
-                    : 'Map size is fixed once the game has started.'}
+                    ? t('Choose the board size for the next game.')
+                    : t('Map size is fixed once the game has started.')}
                 </div>
               </div>
               {isStagingNextGame ? (
@@ -419,11 +474,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
             <div className="flex items-center justify-between gap-3">
               <div>
-                <div className="text-[11px] font-bold text-zinc-200">Player Health</div>
+                <div className="text-[11px] font-bold text-zinc-200">{t('Player Health')}</div>
                 <div className="text-[10px] text-zinc-500">
                   {isStagingNextGame
-                    ? 'Starting and maximum HP for every operative.'
-                    : 'Health is fixed once the game has started.'}
+                    ? t('Starting and maximum HP for every operative.')
+                    : t('Health is fixed once the game has started.')}
                 </div>
               </div>
               {isStagingNextGame ? (
@@ -447,11 +502,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
             <div className="flex items-center justify-between gap-3">
               <div>
-                <div className="text-[11px] font-bold text-zinc-200">Token Reward Pool</div>
+                <div className="text-[11px] font-bold text-zinc-200">{t('Token Reward Pool')}</div>
                 <div className="text-[10px] text-zinc-500">
                   {isStagingNextGame
-                    ? 'Tokens split equally among surviving winners. Default: 100.'
-                    : 'Editable mid-game. Split equally among survivors, rounded down.'}
+                    ? t('Tokens split equally among surviving winners. Default: 100.')
+                    : t('Editable mid-game. Split equally among survivors, rounded down.')}
                 </div>
               </div>
               <div className="flex items-center gap-1.5">
@@ -480,7 +535,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     onClick={() => onUpdateRewardPool(activeRewardPool)}
                     className="px-2 py-1.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-[11px] font-bold rounded-lg disabled:opacity-50"
                   >
-                    Save
+                    {t('Save')}
                   </button>
                 )}
               </div>
@@ -488,11 +543,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
             <div className="flex items-center justify-between gap-3">
               <div>
-                <div className="text-[11px] font-bold text-zinc-200">Mine Limit</div>
+                <div className="text-[11px] font-bold text-zinc-200">{t('Mine Limit')}</div>
                 <div className="text-[10px] text-zinc-500">
                   {isStagingNextGame
-                    ? 'Mines each player may place over the whole game. Destroyed mines still count.'
-                    : 'Editable mid-game. Destroyed mines still count toward the total.'}
+                    ? t('Mines each player may place over the whole game. Destroyed mines still count.')
+                    : t('Editable mid-game. Destroyed mines still count toward the total.')}
                 </div>
               </div>
               <div className="flex flex-wrap items-center justify-end gap-1.5">
@@ -509,9 +564,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     else setActiveMineLimit(next);
                   }}
                   className="w-16 bg-zinc-950 border border-zinc-700 text-xs text-white rounded-lg px-2 py-1.5 text-right font-mono disabled:opacity-50"
-                  title="Base mines per player"
+                  title={t('Base mines per player')}
                 />
-                <span className="text-[10px] text-zinc-500">mines, +1 every</span>
+                <span className="text-[10px] text-zinc-500">{t('mines, +1 every')}</span>
                 <input
                   type="number"
                   min="1"
@@ -525,9 +580,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     else setActiveMineLimitIncreaseDays(next);
                   }}
                   className="w-16 bg-zinc-950 border border-zinc-700 text-xs text-white rounded-lg px-2 py-1.5 text-right font-mono disabled:opacity-50"
-                  title="Days between mine limit increases"
+                  title={t('Days between mine limit increases')}
                 />
-                <span className="text-[10px] text-zinc-500">days</span>
+                <span className="text-[10px] text-zinc-500">{t('days')}</span>
                 {!isStagingNextGame && mineRulesChanged && (
                   <button
                     type="button"
@@ -537,7 +592,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     }
                     className="px-2 py-1.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-[11px] font-bold rounded-lg disabled:opacity-50"
                   >
-                    Save
+                    {t('Save')}
                   </button>
                 )}
               </div>
@@ -545,11 +600,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
             <div className="flex items-center justify-between gap-3">
               <div>
-                <div className="text-[11px] font-bold text-zinc-200">Assassination Cost</div>
+                <div className="text-[11px] font-bold text-zinc-200">{t('Assassination Cost')}</div>
                 <div className="text-[10px] text-zinc-500">
                   {isStagingNextGame
-                    ? 'Points for 1 guaranteed damage with unlimited range. 0 disables it.'
-                    : 'Editable mid-game. 0 disables assassination.'}
+                    ? t('Points for 1 guaranteed damage with unlimited range. 0 disables it.')
+                    : t('Editable mid-game. 0 disables assassination.')}
                 </div>
               </div>
               <div className="flex items-center gap-1.5">
@@ -566,9 +621,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     else setActiveAssassinationCost(next);
                   }}
                   className="w-16 bg-zinc-950 border border-zinc-700 text-xs text-white rounded-lg px-2 py-1.5 text-right font-mono disabled:opacity-50"
-                  title="Assassination cost in points (0 = disabled)"
+                  title={t('Assassination cost in points (0 = disabled)')}
                 />
-                <span className="text-[10px] text-zinc-500">pts</span>
+                <span className="text-[10px] text-zinc-500">{t('pts')}</span>
                 {!isStagingNextGame && assassinationCostChanged && (
                   <button
                     type="button"
@@ -576,14 +631,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     onClick={() => onUpdateAssassinationCost(activeAssassinationCost)}
                     className="px-2 py-1.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-[11px] font-bold rounded-lg disabled:opacity-50"
                   >
-                    Save
+                    {t('Save')}
                   </button>
                 )}
               </div>
             </div>
 
             <div>
-              <div className="text-[11px] font-bold text-zinc-200 mb-1">Buildings</div>
+              <div className="text-[11px] font-bold text-zinc-200 mb-1">{t('Buildings')}</div>
               <div className="grid grid-cols-2 gap-1.5">
                 {ALL_BUILDING_TYPES.map((type) => (
                   <label
@@ -597,13 +652,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       onChange={() => handleBuildingToggle(type)}
                       className="accent-amber-500"
                     />
-                    <span>{BUILDING_LABELS[type]}</span>
+                    <span>{t(BUILDING_LABELS[type])}</span>
                   </label>
                 ))}
               </div>
               <p className="text-[10px] text-zinc-500 mt-1">
-                Disabling a building blocks new construction and interactions with existing ones.
-                Existing buildings stay on the map.
+                {t('Disabling a building blocks new construction and interactions with existing ones. Existing buildings stay on the map.')}
               </p>
             </div>
           </div>
@@ -627,7 +681,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 className="min-h-11 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-zinc-950 font-bold text-xs uppercase tracking-wider rounded-lg flex items-center gap-1.5 disabled:opacity-40"
               >
                 <Play className="w-4 h-4 fill-zinc-950" />
-                {isProcessing ? 'Starting...' : `Launch Game (Spawn ${allPlayers.length} Operative${allPlayers.length === 1 ? '' : 's'})`}
+                {isProcessing
+                  ? t('Starting...')
+                  : allPlayers.length === 1
+                    ? t('Launch Game (Spawn 1 Operative)')
+                    : t('Launch Game (Spawn {count} Operatives)', {
+                        count: allPlayers.length,
+                      })}
               </button>
             )}
 
@@ -637,10 +697,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 disabled={isProcessing}
                 onClick={onResolveDay}
                 className="min-h-11 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs uppercase tracking-wider rounded-lg flex items-center gap-1.5 disabled:opacity-40"
-                title="Instantly calculates today's planned actions and advances to the next day. The timer stays the same — the new day still ends at its scheduled UTC boundary."
+                title={t("Instantly calculates today's planned actions and advances to the next day. The timer stays the same — the new day still ends at its scheduled UTC boundary.")}
               >
                 <FastForward className="w-4 h-4 fill-white" />
-                {isProcessing ? 'Resolving Day...' : 'Resolve Current Day'}
+                {isProcessing ? t('Resolving Day...') : t('Resolve Current Day')}
               </button>
             )}
 
@@ -649,39 +709,82 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <button
                 type="button"
                 disabled={isProcessing}
-                onPointerDown={startHold}
+                onPointerDown={() => startHold('world_peace')}
                 onPointerUp={stopHold}
                 onPointerLeave={stopHold}
                 onPointerCancel={stopHold}
                 onContextMenu={(e) => e.preventDefault()}
-                title="Hold for 5 seconds, then confirm twice. Ends the game and splits tokens equally among surviving winners."
+                title={t('Hold for 5 seconds, then confirm twice. Ends the game and splits tokens equally among surviving winners.')}
                 className="relative overflow-hidden min-h-11 px-4 py-2 bg-red-950 hover:bg-red-900 text-red-200 font-bold text-xs uppercase tracking-wider rounded-lg border border-red-700/70 flex items-center gap-1.5 disabled:opacity-40 select-none touch-none"
               >
                 <span
                   className="absolute inset-y-0 left-0 bg-red-600/60 transition-[width] duration-75"
-                  style={{ width: `${holdProgress}%` }}
+                  style={{ width: holdingAction === 'world_peace' ? `${holdProgress}%` : '0%' }}
                 />
-                <span className="relative z-10 flex items-center gap-1.5">
-                  <Handshake className="w-4 h-4" />
-                  {holdProgress > 0
-                    ? `Hold... ${Math.floor(holdProgress)}%`
-                    : 'Hold 5s: World Peace'}
+                <span className="relative z-10 grid items-center justify-items-start">
+                  <span
+                    className="invisible col-start-1 row-start-1 flex items-center gap-1.5 whitespace-nowrap"
+                    aria-hidden="true"
+                  >
+                    <Handshake className="w-4 h-4" />
+                    {t('Hold 5s: World Peace')}
+                  </span>
+                  <span
+                    className="invisible col-start-1 row-start-1 flex items-center gap-1.5 whitespace-nowrap"
+                    aria-hidden="true"
+                  >
+                    <Handshake className="w-4 h-4" />
+                    {t('Hold... {percent}%', { percent: 100 })}
+                  </span>
+                  <span className="col-start-1 row-start-1 flex items-center gap-1.5 whitespace-nowrap">
+                    <Handshake className="w-4 h-4" />
+                    {holdingAction === 'world_peace' && holdProgress > 0
+                      ? t('Hold... {percent}%', { percent: Math.floor(holdProgress) })
+                      : t('Hold 5s: World Peace')}
+                  </span>
                 </span>
               </button>
             )}
 
-            {/* Reset to unstarted state */}
+            {/* Reset to unstarted state (5s hold + double confirmation) */}
             {!isUnstarted && (
               <button
-                onClick={() => {
-                  if (confirm('Reset to unstarted closed state? Active game state will be cleared.')) {
-                    onResetGame();
-                  }
-                }}
-                className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold rounded-lg border border-zinc-700 flex items-center gap-1.5"
+                type="button"
+                disabled={isProcessing}
+                onPointerDown={() => startHold('reset')}
+                onPointerUp={stopHold}
+                onPointerLeave={stopHold}
+                onPointerCancel={stopHold}
+                onContextMenu={(e) => e.preventDefault()}
+                title={t('Hold for 5 seconds, then confirm twice. Cancels the whole current game and returns to the closed waiting state.')}
+                className="relative overflow-hidden min-h-11 px-4 py-2 bg-red-950 hover:bg-red-900 text-red-200 font-bold text-xs uppercase tracking-wider rounded-lg border border-red-700/70 flex items-center gap-1.5 disabled:opacity-40 select-none touch-none"
               >
-                <RotateCcw className="w-4 h-4" />
-                Reset to Waiting State
+                <span
+                  className="absolute inset-y-0 left-0 bg-red-600/60 transition-[width] duration-75"
+                  style={{ width: holdingAction === 'reset' ? `${holdProgress}%` : '0%' }}
+                />
+                <span className="relative z-10 grid items-center justify-items-start">
+                  <span
+                    className="invisible col-start-1 row-start-1 flex items-center gap-1.5 whitespace-nowrap"
+                    aria-hidden="true"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                    {t('Hold 5s: Reset Game')}
+                  </span>
+                  <span
+                    className="invisible col-start-1 row-start-1 flex items-center gap-1.5 whitespace-nowrap"
+                    aria-hidden="true"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                    {t('Hold... {percent}%', { percent: 100 })}
+                  </span>
+                  <span className="col-start-1 row-start-1 flex items-center gap-1.5 whitespace-nowrap">
+                    <RotateCcw className="w-4 h-4" />
+                    {holdingAction === 'reset' && holdProgress > 0
+                      ? t('Hold... {percent}%', { percent: Math.floor(holdProgress) })
+                      : t('Hold 5s: Reset Game')}
+                  </span>
+                </span>
               </button>
             )}
 
@@ -690,7 +793,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-semibold rounded-lg border border-zinc-700 flex items-center gap-1.5"
             >
               <Terminal className="w-4 h-4" />
-              View Logs
+              {t('View Logs')}
             </button>
           </div>
         </div>
@@ -699,12 +802,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         {showLogs && (
           <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-3 flex flex-col gap-2">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-zinc-300">Audit & Failure Logs</span>
+              <span className="text-xs font-bold text-zinc-300">{t('Audit & Failure Logs')}</span>
               <button
                 onClick={() => setShowLogs(false)}
                 className="text-xs text-zinc-400 hover:text-white"
               >
-                Close Logs
+                {t('Close Logs')}
               </button>
             </div>
             <div className="bg-zinc-950 p-2 rounded-lg max-h-40 overflow-y-auto font-mono text-[10px] text-zinc-400 space-y-1">
@@ -717,47 +820,54 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           </div>
         )}
 
-        {/* Early End Confirmation: YES must be clicked twice */}
-        {showEndPrompt && (
+        {/* Destructive Action Confirmation: YES must be clicked twice */}
+        {pendingAction && (
           <div className="fixed inset-0 z-[60] bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
             <div className="bg-zinc-950 border border-red-700/70 rounded-2xl w-full max-w-md p-5 flex flex-col gap-4 shadow-2xl">
               <div className="flex items-center gap-2 text-red-400">
                 <AlertTriangle className="w-5 h-5" />
                 <h3 className="text-sm font-bold uppercase tracking-wider">
-                  End Game In World Peace?
+                  {pendingAction === 'world_peace'
+                    ? t('End Game In World Peace?')
+                    : t('Cancel The Whole Game?')}
                 </h3>
               </div>
-              <p className="text-xs text-zinc-300 leading-relaxed">
-                This immediately ends the current game. The reward pool of{' '}
-                <span className="font-mono font-bold text-amber-300">
-                  {game?.rewardPool ?? DEFAULT_REWARD_POOL} tokens
-                </span>{' '}
-                will be split equally among surviving winners, rounded down, and the game will be
-                marked as finished.
-              </p>
+              {pendingAction === 'world_peace' ? (
+                <p className="text-xs text-zinc-300 leading-relaxed">
+                  {t('This immediately ends the current game. The reward pool of')}{' '}
+                  <span className="font-mono font-bold text-amber-300">
+                    {t('{count} tokens', { count: game?.rewardPool ?? DEFAULT_REWARD_POOL })}
+                  </span>{' '}
+                  {t('will be split equally among surviving winners, rounded down, and the game will be marked as finished.')}
+                </p>
+              ) : (
+                <p className="text-xs text-zinc-300 leading-relaxed">
+                  {t('This button cancels the entire current game and returns the server to the closed waiting state. Player accounts, token balances, and career stats are preserved, but the current match cannot be resumed and must be launched again from Day 1.')}
+                </p>
+              )}
               <p className="text-[11px] text-red-300 bg-red-950/60 border border-red-800 rounded-lg p-2">
-                This cannot be undone. You must click <span className="font-bold">YES</span> twice
-                to confirm.
+                {t('This cannot be undone. You must click')}{' '}
+                <span className="font-bold">{t('YES')}</span> {t('twice to confirm.')}
               </p>
               <div className="flex items-center justify-end gap-2">
                 <button
                   type="button"
-                  onClick={cancelEndPrompt}
+                  onClick={cancelDangerousPrompt}
                   className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-semibold rounded-lg border border-zinc-700"
                 >
-                  Cancel
+                  {t('Cancel')}
                 </button>
                 <button
                   type="button"
-                  onClick={handleConfirmEnd}
+                  onClick={handleConfirmDangerous}
                   disabled={isProcessing}
                   className={`px-4 py-2 text-xs font-bold uppercase tracking-wider rounded-lg disabled:opacity-50 ${
-                    endConfirmStep === 0
+                    confirmStep === 0
                       ? 'bg-red-600 hover:bg-red-500 text-white'
                       : 'bg-amber-500 hover:bg-amber-400 text-zinc-950'
                   }`}
                 >
-                  {endConfirmStep === 0 ? 'Yes' : 'Yes — Click Again'}
+                  {confirmStep === 0 ? t('Yes') : t('Yes — Click Again')}
                 </button>
               </div>
             </div>
@@ -768,31 +878,35 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         <form onSubmit={handleCreatePlayer} className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex flex-col gap-3">
           <h4 className="text-xs font-bold uppercase tracking-wider text-white flex items-center gap-1.5">
             <UserPlus className="w-4 h-4 text-emerald-400" />
-            Create New Operative
+            {t('Create New Operative')}
           </h4>
           <p className="text-xs text-zinc-400">
-            Registers a new operative in the database. Generating auth links and profile editing can be done for any existing player below.
+            {t('Registers a new operative in the database. Generating auth links and profile editing can be done for any existing player below.')}
           </p>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="text-[11px] text-zinc-400 block mb-1">Operative Codename *</label>
+              <label className="text-[11px] text-zinc-400 block mb-1">
+                {t('Operative Codename *')}
+              </label>
               <input
                 type="text"
                 required
                 value={newUsername}
                 onChange={(e) => setNewUsername(e.target.value)}
-                placeholder="e.g. Ghost_01"
+                placeholder={t('e.g. Ghost_01')}
                 className="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-1.5 text-xs text-white"
               />
             </div>
             <div>
-              <label className="text-[11px] text-zinc-400 block mb-1">Avatar Image URL (Optional)</label>
+              <label className="text-[11px] text-zinc-400 block mb-1">
+                {t('Avatar Image URL (Optional)')}
+              </label>
               <input
                 type="text"
                 value={newAvatarUrl}
                 onChange={(e) => setNewAvatarUrl(e.target.value)}
-                placeholder="https://... or leave blank for auto"
+                placeholder={t('https://... or leave blank for auto')}
                 className="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-1.5 text-xs text-white"
               />
             </div>
@@ -800,7 +914,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
           <div className="flex items-center justify-between gap-3">
             <p className="text-[11px] text-zinc-500 max-w-[280px]">
-              Admin accounts are provisioned by the server. New players never receive administrator rights.
+              {t('Admin accounts are provisioned by the server. New players never receive administrator rights.')}
             </p>
 
             <button
@@ -808,7 +922,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               disabled={isCreatingPlayer}
               className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs uppercase tracking-wider rounded-lg shadow disabled:opacity-50"
             >
-              {isCreatingPlayer ? 'Creating...' : 'Create Player'}
+              {isCreatingPlayer ? t('Creating...') : t('Create Player')}
             </button>
           </div>
 
@@ -829,10 +943,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between">
             <h4 className="text-xs font-bold uppercase tracking-wider text-zinc-400">
-              Registered Operatives ({allPlayers.length})
+              {t('Registered Operatives ({count})', { count: allPlayers.length })}
             </h4>
             <span className="text-[11px] text-zinc-500">
-              Generate links or edit profiles for any player
+              {t('Generate links or edit profiles for any player')}
             </span>
           </div>
 
@@ -862,14 +976,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                 type="text"
                                 value={editUsername}
                                 onChange={(e) => setEditUsername(e.target.value)}
-                                placeholder="Codename"
+                                placeholder={t('Codename')}
                                 className="bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-xs text-white"
                               />
                               <input
                                 type="text"
                                 value={editAvatar}
                                 onChange={(e) => setEditAvatar(e.target.value)}
-                                placeholder="Avatar URL"
+                                placeholder={t('Avatar URL')}
                                 className="bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-xs text-white w-48"
                               />
                             </div>
@@ -879,13 +993,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                 disabled={isSavingEdit}
                                 className="px-2 py-0.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[11px] font-bold"
                               >
-                                {isSavingEdit ? 'Saving...' : 'Save Profile'}
+                                {isSavingEdit ? t('Saving...') : t('Save Profile')}
                               </button>
                               <button
                                 onClick={() => setEditingPlayerId(null)}
                                 className="px-2 py-0.5 bg-zinc-800 text-zinc-300 rounded text-[11px]"
                               >
-                                Cancel
+                                {t('Cancel')}
                               </button>
                             </div>
                           </div>
@@ -896,13 +1010,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               {p.isAdmin && <span className="text-[10px] text-amber-400 font-bold">[ADMIN]</span>}
                               {!p.isAlive && !isUnstarted && (
                                 <span className="text-[10px] bg-red-950 text-red-400 px-1 rounded font-bold">
-                                  ELIMINATED
+                                  {t('ELIMINATED')}
                                 </span>
                               )}
                             </div>
                             <div className="text-[10px] text-zinc-400 font-mono">
-                              ID: {p.id.slice(0, 8)}... | Matches: {p.stats.gamesPlayed} | Deaths:{' '}
-                              {p.stats.deaths} | Tokens: {p.tokens}
+                              {t('ID: {id}... | Played: {played} | World Peace: {peace} | Last One: {last} | Deaths: {deaths} | Tokens: {tokens}', {
+                                id: p.id.slice(0, 8),
+                                played: p.stats.gamesPlayed,
+                                peace: p.stats.worldPeaces,
+                                last: p.stats.lastOneStandings,
+                                deaths: p.stats.deaths,
+                                tokens: p.tokens,
+                              })}
                             </div>
                           </>
                         )}
@@ -915,20 +1035,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         {p.isAdmin ? (
                           <span
                             className="px-2.5 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-500 text-xs font-semibold flex items-center gap-1"
-                            title="Admin auth links can only be generated from the server console (npm run admin:link)"
+                            title={t('Admin auth links can only be generated from the server console (npm run admin:link)')}
                           >
                             <Key className="w-3.5 h-3.5" />
-                            <span>Console only</span>
+                            <span>{t('Console only')}</span>
                           </span>
                         ) : (
                           <button
                             onClick={() => handleGenerateAuthLink(p.id)}
                             disabled={isGenerating}
                             className="px-2.5 py-1.5 rounded-lg bg-emerald-950/70 border border-emerald-700/60 hover:bg-emerald-900 text-emerald-300 text-xs font-semibold flex items-center gap-1"
-                            title="Generate one-time invite / auth link"
+                            title={t('Generate one-time invite / auth link')}
                           >
                             <Key className="w-3.5 h-3.5" />
-                            <span>{isGenerating ? 'Generating...' : 'Auth Link'}</span>
+                            <span>{isGenerating ? t('Generating...') : t('Auth Link')}</span>
                           </button>
                         )}
 
@@ -940,7 +1060,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             setEditAvatar(p.avatarUrl);
                           }}
                           className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700"
-                          title="Edit Player Profile"
+                          title={t('Edit Player Profile')}
                         >
                           <Edit2 className="w-3.5 h-3.5" />
                         </button>
@@ -949,10 +1069,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         <button
                           onClick={() => handleResetSessions(p.id)}
                           className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-red-400 border border-zinc-700"
-                          title="Revoke Player Sessions"
+                          title={t('Revoke Player Sessions')}
                         >
                           <Lock className="w-3.5 h-3.5" />
                         </button>
+
+                        {/* Delete Player (admin accounts are server-provisioned) */}
+                        {!p.isAdmin && (
+                          <button
+                            onClick={() => handleDeletePlayer(p)}
+                            disabled={deletingPlayerId === p.id}
+                            className="p-1.5 rounded-lg bg-zinc-800 hover:bg-red-950 text-red-400 border border-zinc-700 disabled:opacity-50"
+                            title={t('Delete Player')}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -961,8 +1093,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   {linkInfo && (
                     <div className="mt-1 bg-zinc-950 border border-emerald-500/40 rounded-lg p-2 flex flex-col gap-1">
                       <div className="flex items-center justify-between text-[10px] text-emerald-400 font-bold uppercase">
-                        <span>One-Time Auth / Invite Link for {p.username}:</span>
-                        <span className="text-zinc-500 font-normal">Valid for 7 days</span>
+                        <span>
+                          {t('One-Time Auth / Invite Link for {name}:', { name: p.username })}
+                        </span>
+                        <span className="text-zinc-500 font-normal">{t('Valid for 7 days')}</span>
                       </div>
                       <div className="flex items-center gap-2">
                         <input
@@ -977,7 +1111,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white text-xs rounded font-bold flex items-center gap-1 shrink-0 shadow"
                         >
                           {copiedPlayerId === p.id ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                          {copiedPlayerId === p.id ? 'Copied' : 'Copy Link'}
+                          {copiedPlayerId === p.id ? t('Copied') : t('Copy Link')}
                         </button>
                       </div>
                     </div>

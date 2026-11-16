@@ -473,6 +473,25 @@ class GameDatabase {
     );
   }
 
+  /**
+   * Permanently removes a player and the identity-bound records that would
+   * otherwise keep their sessions or invites alive. Stored game snapshots keep
+   * their historical copy of the player.
+   */
+  deletePlayer(playerId: string) {
+    this.db.exec('BEGIN TRANSACTION;');
+    try {
+      this.db.prepare('DELETE FROM session_cookies WHERE player_id = ?').run(playerId);
+      this.db.prepare('DELETE FROM invitations WHERE player_id = ?').run(playerId);
+      this.db.prepare('DELETE FROM actions WHERE player_id = ?').run(playerId);
+      this.db.prepare('DELETE FROM players WHERE id = ?').run(playerId);
+      this.db.exec('COMMIT;');
+    } catch (err) {
+      this.db.exec('ROLLBACK;');
+      throw err;
+    }
+  }
+
   private mapPlayerRow(row: any): Player {
     return {
       id: row.id,

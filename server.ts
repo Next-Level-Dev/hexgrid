@@ -13,6 +13,12 @@ import { apiRouter } from './server/routes';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const setNoCacheHeaders = (res: express.Response) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+};
+
 async function startServer() {
   const app = express();
   const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
@@ -33,9 +39,17 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    // Production static file serving
-    app.use(express.static(path.resolve(__dirname, 'dist')));
+    // Production static file serving. Disable caching so clients always load
+    // the newest deployed HTML and JS bundles.
+    app.use(
+      express.static(path.resolve(__dirname, 'dist'), {
+        etag: false,
+        lastModified: false,
+        setHeaders: setNoCacheHeaders,
+      })
+    );
     app.get('*', (_req, res) => {
+      setNoCacheHeaders(res);
       res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
     });
   }

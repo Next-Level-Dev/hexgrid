@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { Player, GameStateData } from '../types/game';
 import { DEFAULT_PLAYER_HEALTH } from '../game/rules';
+import { useI18n } from '../i18n';
 
 interface PlayerRosterProps {
   allPlayers: Player[];
@@ -30,6 +31,7 @@ export const PlayerRoster: React.FC<PlayerRosterProps> = ({
   onHoverPlayer,
   maxHealth = DEFAULT_PLAYER_HEALTH,
 }) => {
+  const { t } = useI18n();
   const [isCollapsed, setIsCollapsed] = useState(false);
   const statePlayers = state?.players || {};
   const priorityOrder = state?.playerPriorityOrder || [];
@@ -41,13 +43,15 @@ export const PlayerRoster: React.FC<PlayerRosterProps> = ({
         <div className="flex items-center gap-2">
           <Users className="w-4 h-4 text-amber-400" />
           <h3 className="text-xs font-bold uppercase tracking-wider text-white">
-            OPERATIVES ({Object.values(statePlayers).filter((p) => p.isAlive).length} Active)
+            {t('OPERATIVES ({count} Active)', {
+              count: Object.values(statePlayers).filter((p) => p.isAlive).length,
+            })}
           </h3>
         </div>
         <button
           onClick={() => setIsCollapsed(!isCollapsed)}
           className="p-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
-          title={isCollapsed ? 'Expand Roster' : 'Collapse Roster'}
+          title={isCollapsed ? t('Expand Roster') : t('Collapse Roster')}
         >
           {isCollapsed ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
         </button>
@@ -104,25 +108,39 @@ export const PlayerRoster: React.FC<PlayerRosterProps> = ({
                         {p.isAdmin && <Crown className="w-3 h-3 text-amber-400" />}
                         {isCurrent && (
                           <span className="text-[8px] bg-amber-400/20 text-amber-300 px-1 rounded font-bold">
-                            YOU
+                            {t('YOU')}
                           </span>
                         )}
                       </div>
                       <div className="text-[9px] text-zinc-400 font-mono">
-                        {isAlive ? `(${snap?.x ?? p.x}, ${snap?.y ?? p.y})` : 'ELIMINATED'}
+                        {isAlive ? `(${snap?.x ?? p.x}, ${snap?.y ?? p.y})` : t('ELIMINATED')}
+                      </div>
+                      <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[8px] font-mono text-zinc-500">
+                        <span title={t('Games played')}>
+                          {t('Played {count}', { count: p.stats.gamesPlayed })}
+                        </span>
+                        <span title={t('World Peace wins')}>
+                          {t('World Peace {count}', { count: p.stats.worldPeaces })}
+                        </span>
+                        <span title={t('Last One Standing wins')}>
+                          {t('Last One {count}', { count: p.stats.lastOneStandings })}
+                        </span>
+                        <span title={t('Deaths')}>
+                          {t('Deaths {count}', { count: p.stats.deaths })}
+                        </span>
                       </div>
                     </div>
                   </div>
 
                   <div className="flex items-center gap-2">
                     {/* Health */}
-                    <div className="flex items-center text-[11px] font-mono text-red-400" title="Health">
+                    <div className="flex items-center text-[11px] font-mono text-red-400" title={t('Health')}>
                       <Heart className="w-3 h-3 mr-0.5 fill-red-500/20" />
                       <span>{health}/{maxHealth}</span>
                     </div>
 
                     {/* Points */}
-                    <div className="flex items-center text-[11px] font-mono text-amber-300" title="Points">
+                    <div className="flex items-center text-[11px] font-mono text-amber-300" title={t('Points')}>
                       <Coins className="w-3 h-3 mr-0.5 fill-amber-500/20" />
                       <span>{points}</span>
                     </div>
@@ -134,9 +152,9 @@ export const PlayerRoster: React.FC<PlayerRosterProps> = ({
                           ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
                           : 'bg-zinc-800 text-zinc-500'
                       }`}
-                      title="World Peace Vote"
+                      title={t('World Peace Vote')}
                     >
-                      {peaceVote === 'yes' ? 'PEACE' : 'WAR'}
+                      {peaceVote === 'yes' ? t('PEACE') : t('WAR')}
                     </span>
                   </div>
                 </div>
@@ -148,7 +166,7 @@ export const PlayerRoster: React.FC<PlayerRosterProps> = ({
           <div className="border-t border-zinc-800 pt-2 flex flex-col gap-1.5">
             <h4 className="text-[10px] font-bold uppercase tracking-wider text-amber-300 flex items-center gap-1">
               <ListOrdered className="w-3 h-3" />
-              <span>ROUND RESOLUTION PRIORITY</span>
+              <span>{t('ROUND RESOLUTION PRIORITY')}</span>
             </h4>
             <div className="flex flex-col gap-1">
               {priorityOrder.map((pid, idx) => {
@@ -165,7 +183,9 @@ export const PlayerRoster: React.FC<PlayerRosterProps> = ({
                       </span>
                       <span className="text-zinc-300 truncate max-w-[120px]">{playerObj.username}</span>
                     </div>
-                    <span className="text-zinc-500">{idx === 0 ? 'Acts 1st' : `Rank #${idx + 1}`}</span>
+                    <span className="text-zinc-500">
+                      {idx === 0 ? t('Acts 1st') : t('Rank #{rank}', { rank: idx + 1 })}
+                    </span>
                   </div>
                 );
               })}
@@ -176,9 +196,11 @@ export const PlayerRoster: React.FC<PlayerRosterProps> = ({
           <div className="bg-zinc-900/60 p-2 rounded-xl text-[10px] text-zinc-400 border border-zinc-800/80">
             <div className="font-semibold text-zinc-200 mb-0.5 flex items-center gap-1">
               <Info className="w-3 h-3 text-cyan-400" />
-              <span>Circular 21-Square Tactical Range</span>
+              <span>{t('Circular 21-Square Tactical Range')}</span>
             </div>
-            <p>5×5 perimeter excluding 4 corners and self. Tap or hover any operative to see their circular reach.</p>
+            <p>
+              {t('5×5 perimeter excluding 4 corners and self. Tap or hover any operative to see their circular reach.')}
+            </p>
           </div>
         </div>
       )}

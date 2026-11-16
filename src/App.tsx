@@ -31,6 +31,7 @@ import {
 } from './game/rules';
 import { Clock, History, ArrowRight, Swords, Users, AlertTriangle } from 'lucide-react';
 import { useIsMobile } from './utils/useIsMobile';
+import { useI18n } from './i18n';
 
 /**
  * The newest day a player is allowed to inspect. While the closed phase is
@@ -44,6 +45,8 @@ function getHighestVisibleDay(game: GameRecord | null): number {
 }
 
 export default function App() {
+  const { t } = useI18n();
+
   // Game & Cycle States
   const [game, setGame] = useState<GameRecord | null>(null);
   const [secondsRemaining, setSecondsRemaining] = useState<number>(0);
@@ -95,6 +98,8 @@ export default function App() {
     Record<string, GameStateData['players'][string]> | null
   >(null);
   const [playbackEventIndex, setPlaybackEventIndex] = useState<number>(-1);
+  const [playbackAutoPlay, setPlaybackAutoPlay] = useState<boolean>(false);
+  const [fullReplayEndDay, setFullReplayEndDay] = useState<number | null>(null);
   const [activeFx, setActiveFx] = useState<any | null>(null);
   const [isAnimating, setIsAnimating] = useState<boolean>(false);
 
@@ -192,10 +197,6 @@ export default function App() {
 
           if (previousView !== target) setViewingDay(target);
           if (currentStateDayRef.current !== target) loadGameState(target);
-        }
-
-        if (data.game.phase === 'over') {
-          triggerVictoryConfetti();
         }
       }
     } catch (err) {
@@ -301,6 +302,18 @@ export default function App() {
     }
     previousPhaseRef.current = phase;
   }, [game?.phase]);
+
+  // Celebrate only once the final day has actually been opened. The confetti
+  // must not fire while the last round is still sealed behind the replay.
+  const victoryCelebratedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!game || game.phase !== 'over') return;
+    if (viewingDay !== game.currentDay || loadedStateDay !== game.currentDay) return;
+    const key = `${game.id}:${game.currentDay}`;
+    if (victoryCelebratedRef.current === key) return;
+    victoryCelebratedRef.current = key;
+    triggerVictoryConfetti();
+  }, [game?.id, game?.phase, game?.currentDay, viewingDay, loadedStateDay]);
 
   // Timer Tick & Poll
   useEffect(() => {
@@ -709,41 +722,35 @@ export default function App() {
         setSaveSuccess(true);
         setTimeout(() => setSaveSuccess(false), 4000);
       } else {
-        alert(data.error || 'Failed to submit actions');
+        alert(data.error || t('Failed to submit actions'));
       }
     } catch (err: any) {
-      alert(err.message || 'Submission error');
+      alert(err.message || t('Submission error'));
     } finally {
       setIsSavingActions(false);
     }
   };
 
-  const handleProgressToNextDay = async () => {
-    if (!game || game.currentDay === 0 || isAnimating) return;
+  const startReplayDay = async (
+    fromDay: number,
+    nextDay: number,
+    options: { autoPlay?: boolean; fullReplay?: boolean } = {}
+  ) => {
+    if (!game || fromDay < 1 || nextDay <= fromDay) return false;
 
-    // The next day is only revealed after the closed phase has finished. While
-    // the game is closed the next state is still being calculated and must stay
-    // sealed behind the timer screen.
-    if (game.phase !== 'open') return;
+    if (!options.fullReplay) {
+      setSelectedActionType(null);
+      setSelectedTile(null);
+      setSaveSuccess(false);
+    }
 
-    const highestVisibleDay = getHighestVisibleDay(game);
-    const fromDay = viewingDay;
-    if (fromDay < 1 || fromDay >= highestVisibleDay) return;
-
-    const nextDay = fromDay + 1;
-    setSelectedActionType(null);
-    setSelectedTile(null);
-    setSaveSuccess(false);
-
-    // Freeze whichever state load is in flight so it cannot replace the replay
-    // base or the target snapshot while the animation is running.
     loadStateRequestRef.current += 1;
 
-    // The replay must start from the state of the day we are currently
-    // viewing. If that state is still loading (or the user just clicked a
-    // different day), fetch it first so the tokens tween from the correct
-    // positions instead of the already-resolved next day.
-    let baseState = currentStateDayRef.current === fromDay ? currentState : null;
+    let baseState = options.fullReplay
+      ? null
+      : currentStateDayRef.current === fromDay
+        ? currentState
+        : null;
     if (!baseState) {
       try {
         const baseRes = await fetch(`/api/game/state/${fromDay}`);
@@ -757,7 +764,7 @@ export default function App() {
       } catch (err) {
         console.error('Error fetching base state for replay:', err);
         loadGameCurrent();
-        return;
+        return false;
       }
     }
 
@@ -774,26 +781,63 @@ export default function App() {
       const data = await res.json();
       if (!data.state) throw new Error(`Day ${nextDay} state missing`);
       const rawEvents: GameEngineEvent[] = data.state.events || [];
-      // While a game is still running, other players' mine placements stay
-      // hidden during replay. Finished games reveal the full timeline.
       const events = rawEvents.filter((evt) => {
         const isMineBuild = evt.type === 'build' && evt.buildingType === 'mine';
         if (!isMineBuild) return true;
         return game?.phase === 'over' || evt.playerId === player?.id;
       });
 
+      setPlaybackAutoPlay(Boolean(options.autoPlay));
       setPlaybackEvents(events);
       setPlaybackTargetDay(nextDay);
+      return true;
     } catch (err) {
       console.error('Error fetching progress state:', err);
       setPlaybackEvents(null);
       setPlaybackTargetDay(null);
       setPlaybackBasePlayers(null);
       setPlaybackEventIndex(-1);
+      setPlaybackAutoPlay(false);
       setActiveFx(null);
       setIsAnimating(false);
       loadGameCurrent();
+      return false;
     }
+  };
+
+  const handleProgressToNextDay = async () => {
+    if (!game || game.currentDay === 0 || isAnimating) return;
+    if (game.phase !== 'open' && game.phase !== 'over') return;
+
+    const highestVisibleDay = getHighestVisibleDay(game);
+    const fromDay = viewingDay;
+    if (fromDay < 1 || fromDay >= highestVisibleDay) return;
+
+    setFullReplayEndDay(null);
+    await startReplayDay(fromDay, fromDay + 1);
+  };
+
+  const handleFullMatchReplay = async () => {
+    if (!game || !player?.isAdmin || game.phase !== 'over' || isAnimating) return;
+
+    const finalDay = game.currentDay;
+    if (finalDay < 2) {
+      setViewingDay(Math.max(1, finalDay));
+      await loadGameState(Math.max(1, finalDay));
+      return;
+    }
+
+    setFullReplayEndDay(finalDay);
+    setViewingDay(1);
+    setSelectedActionType(null);
+    setSelectedTile(null);
+    setSaveSuccess(false);
+
+    const started = await startReplayDay(1, 2, {
+      autoPlay: true,
+      fullReplay: true,
+    });
+    if (!started) setFullReplayEndDay(null);
   };
 
   const handleAnimationStep = (evt: GameEngineEvent | null, index: number) => {
@@ -802,11 +846,15 @@ export default function App() {
   };
 
   const handleCompleteAnimation = async () => {
-    if (playbackTargetDay) {
-      const target = playbackTargetDay;
-      setViewingDay(target);
-      loadGameState(target);
+    if (!playbackTargetDay) return;
 
+    const target = playbackTargetDay;
+    const isFullReplay = fullReplayEndDay !== null;
+
+    setViewingDay(target);
+    await loadGameState(target);
+
+    if (!isFullReplay) {
       try {
         await fetch('/api/game/progress', {
           method: 'POST',
@@ -818,10 +866,32 @@ export default function App() {
         console.error(err);
       }
     }
+
+    if (isFullReplay && fullReplayEndDay && target < fullReplayEndDay) {
+      setPlaybackEvents(null);
+      setPlaybackTargetDay(null);
+      setPlaybackBasePlayers(null);
+      setPlaybackEventIndex(-1);
+      setActiveFx(null);
+
+      const started = await startReplayDay(target, target + 1, {
+        autoPlay: true,
+        fullReplay: true,
+      });
+      if (!started) {
+        setPlaybackAutoPlay(false);
+        setFullReplayEndDay(null);
+        setIsAnimating(false);
+      }
+      return;
+    }
+
     setPlaybackEvents(null);
     setPlaybackTargetDay(null);
     setPlaybackBasePlayers(null);
     setPlaybackEventIndex(-1);
+    setPlaybackAutoPlay(false);
+    setFullReplayEndDay(null);
     setActiveFx(null);
     setSelectedActionType(null);
     setSelectedTile(null);
@@ -852,10 +922,10 @@ export default function App() {
         await loadGameCurrent();
         setIsAdminOpen(false);
       } else {
-        alert(data.error || 'Failed to start game');
+        alert(data.error || t('Failed to start game'));
       }
     } catch (err: any) {
-      alert(err.message || 'Error starting game');
+      alert(err.message || t('Error starting game'));
     } finally {
       setIsProcessingRound(false);
     }
@@ -873,10 +943,10 @@ export default function App() {
       if (res.ok) {
         await loadGameCurrent();
       } else {
-        alert(data.error || 'Failed to update building setting');
+        alert(data.error || t('Failed to update building setting'));
       }
     } catch (err: any) {
-      alert(err.message || 'Error updating building setting');
+      alert(err.message || t('Error updating building setting'));
     } finally {
       setIsProcessingRound(false);
     }
@@ -894,10 +964,10 @@ export default function App() {
       if (res.ok && data.game) {
         setGame(data.game);
       } else {
-        alert(data.error || 'Failed to update reward pool');
+        alert(data.error || t('Failed to update reward pool'));
       }
     } catch (err: any) {
-      alert(err.message || 'Error updating reward pool');
+      alert(err.message || t('Error updating reward pool'));
     } finally {
       setIsProcessingRound(false);
     }
@@ -918,10 +988,10 @@ export default function App() {
       if (res.ok && data.game) {
         setGame(data.game);
       } else {
-        alert(data.error || 'Failed to update mine rules');
+        alert(data.error || t('Failed to update mine rules'));
       }
     } catch (err: any) {
-      alert(err.message || 'Error updating mine rules');
+      alert(err.message || t('Error updating mine rules'));
     } finally {
       setIsProcessingRound(false);
     }
@@ -939,10 +1009,10 @@ export default function App() {
       if (res.ok && data.game) {
         setGame(data.game);
       } else {
-        alert(data.error || 'Failed to update assassination cost');
+        alert(data.error || t('Failed to update assassination cost'));
       }
     } catch (err: any) {
-      alert(err.message || 'Error updating assassination cost');
+      alert(err.message || t('Error updating assassination cost'));
     } finally {
       setIsProcessingRound(false);
     }
@@ -957,10 +1027,10 @@ export default function App() {
         await loadGameCurrent();
         setIsAdminOpen(false);
       } else {
-        alert(data.error || 'Failed to resolve current day');
+        alert(data.error || t('Failed to resolve current day'));
       }
     } catch (err: any) {
-      alert(err.message || 'Error resolving current day');
+      alert(err.message || t('Error resolving current day'));
     } finally {
       setIsProcessingRound(false);
     }
@@ -978,10 +1048,10 @@ export default function App() {
         await loadGameCurrent();
         setIsAdminOpen(false);
       } else {
-        alert(data.error || 'Failed to end the game');
+        alert(data.error || t('Failed to end the game'));
       }
     } catch (err: any) {
-      alert(err.message || 'Error ending the game');
+      alert(err.message || t('Error ending the game'));
     } finally {
       setIsProcessingRound(false);
     }
@@ -1057,16 +1127,19 @@ export default function App() {
 
           <div className="max-w-lg">
             <h2 className="text-lg md:text-2xl font-black text-white tracking-widest uppercase mb-2">
-              CLOSED PHASE ACTIVE
+              {t('CLOSED PHASE ACTIVE')}
             </h2>
             <p className="text-xs text-zinc-400 leading-relaxed">
-              The live grid is veiled while backend engines process all planned actions, detonations,
-              and priority queues. The new round opens at 02:00 UTC.
+              {t('The live grid is veiled while backend engines process all planned actions, detonations, and priority queues. The new round opens at 02:00 UTC.')}
             </p>
           </div>
 
           <div className="font-mono text-2xl md:text-4xl font-black text-amber-400 tracking-widest bg-zinc-900/90 px-6 md:px-8 py-3 md:py-4 rounded-2xl border border-zinc-800">
-            {Math.floor(secondsRemaining / 3600)}h {Math.floor((secondsRemaining % 3600) / 60)}m {secondsRemaining % 60}s
+            {t('{h}h {m}m {s}s', {
+              h: Math.floor(secondsRemaining / 3600),
+              m: Math.floor((secondsRemaining % 3600) / 60),
+              s: secondsRemaining % 60,
+            })}
           </div>
 
           <div className="flex flex-wrap items-center justify-center gap-2">
@@ -1081,51 +1154,90 @@ export default function App() {
                 className="px-5 md:px-6 py-3 bg-zinc-800 hover:bg-zinc-700 text-white font-bold text-xs uppercase tracking-wider rounded-xl border border-zinc-700 flex items-center gap-2"
               >
                 <History className="w-4 h-4 text-amber-400" />
-                <span>View Previous Day &amp; My Actions (Day {game.currentDay - 1})</span>
+                <span>{t('View Previous Day & My Actions (Day {day})', { day: game.currentDay - 1 })}</span>
               </button>
             )}
           </div>
         </div>
       )}
 
-      {/* Unstarted Game Floating Banner */}
-      {isUnstarted && (
-        <div className="absolute z-30 md:top-20 md:left-1/2 md:-translate-x-1/2 max-md:inset-x-3 max-md:bottom-4 bg-zinc-900/90 backdrop-blur-md border border-amber-500/40 rounded-2xl px-4 py-3 flex flex-wrap items-center gap-3 shadow-2xl">
-          <div className="w-2.5 h-2.5 rounded-full bg-amber-400" />
-          <div className="text-left flex-1 min-w-[180px]">
-            <h3 className="text-xs font-bold text-amber-300 uppercase tracking-wider">
-              Battlefield Staging — Game Waiting to Start
-            </h3>
-            <p className="text-[11px] text-zinc-400">
-              {allPlayers.length} operative(s) registered. All players will spawn when the game is launched for Day 1.
-            </p>
-          </div>
-          {player?.isAdmin ? (
-            <span className="text-xs text-zinc-400 font-mono">Launch Day 1 via the Admin Console (header icon)</span>
-          ) : (
-            <span className="text-xs text-zinc-500 font-mono">Awaiting Administrator</span>
+      {/* Top-of-screen notices: anchored below the measured header so the
+          sticky header can never cover them. */}
+      {!isAnimating && (
+        <div
+          className="pointer-events-none absolute inset-x-0 z-50 flex flex-col items-center gap-2 px-3"
+          style={{
+            top: headerHeight + 8,
+            visibility: headerHeight > 0 ? 'visible' : 'hidden',
+          }}
+        >
+          {hasUnsavedChanges && (
+            <div className="pointer-events-auto flex max-w-full flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-red-700/70 bg-red-950/90 px-3 py-1.5 shadow-xl backdrop-blur-md">
+              <span className="relative flex h-2 w-2 shrink-0">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-60" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500" />
+              </span>
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-red-400" />
+              <span className="text-[11px] md:text-xs font-semibold text-red-200 text-left">
+                {t("Unsaved plan changes — your edits haven't been submitted to the server.")}
+              </span>
+              <button
+                onClick={handleSubmitActions}
+                disabled={isSavingActions}
+                className="px-2.5 py-1 bg-red-600 hover:bg-red-500 text-white text-[11px] font-bold rounded-lg disabled:opacity-50 shrink-0"
+              >
+                {isSavingActions ? t('Saving…') : t('Submit Now')}
+              </button>
+            </div>
           )}
-        </div>
-      )}
 
-      {/* Floating Notice while inspecting a historical day during the closed phase */}
-      {!isUnstarted && isClosed && isInspectingClosedPhase && !isAnimating && (
-        <div className="fixed z-30 md:top-20 md:left-1/2 md:-translate-x-1/2 max-md:inset-x-3 max-md:top-auto max-md:bottom-4 bg-amber-950/80 backdrop-blur-md border border-amber-700/60 rounded-xl px-3 py-2 flex flex-wrap items-center gap-2 text-xs text-amber-200 shadow-xl">
-          <Clock className="w-4 h-4 text-amber-400 shrink-0" />
-          <span className="flex-1 min-w-[160px]">Viewing Day {viewingDay} archive. Live Day {game?.currentDay} is currently calculating.</span>
-          <button
-            onClick={() => {
-              setIsInspectingClosedPhase(false);
-              if (game) {
-                const prevDay = Math.max(1, game.currentDay - 1);
-                setViewingDay(prevDay);
-                loadGameState(prevDay);
-              }
-            }}
-            className="px-2.5 py-1 bg-amber-500 text-zinc-950 rounded font-bold text-[11px] hover:bg-amber-400 flex items-center gap-1"
-          >
-            Live Timer <ArrowRight className="w-3 h-3" />
-          </button>
+          {isUnstarted && (
+            <div className="pointer-events-auto flex w-full max-w-2xl flex-wrap items-center gap-3 rounded-2xl border border-amber-500/40 bg-zinc-900/90 px-4 py-3 shadow-2xl backdrop-blur-md">
+              <div className="w-2.5 h-2.5 rounded-full bg-amber-400" />
+              <div className="text-left flex-1 min-w-[180px]">
+                <h3 className="text-xs font-bold text-amber-300 uppercase tracking-wider">
+                  {t('Battlefield Staging — Game Waiting to Start')}
+                </h3>
+                <p className="text-[11px] text-zinc-400">
+                  {t('{count} operative(s) registered. All players will spawn when the game is launched for Day 1.', {
+                    count: allPlayers.length,
+                  })}
+                </p>
+              </div>
+              {player?.isAdmin ? (
+                <span className="text-xs text-zinc-400 font-mono">
+                  {t('Launch Day 1 via the Admin Console (header icon)')}
+                </span>
+              ) : (
+                <span className="text-xs text-zinc-500 font-mono">{t('Awaiting Administrator')}</span>
+              )}
+            </div>
+          )}
+
+          {!isUnstarted && isClosed && isInspectingClosedPhase && (
+            <div className="pointer-events-auto flex w-full max-w-2xl flex-wrap items-center gap-2 rounded-xl border border-amber-700/60 bg-amber-950/80 px-3 py-2 text-xs text-amber-200 shadow-xl backdrop-blur-md">
+              <Clock className="w-4 h-4 text-amber-400 shrink-0" />
+              <span className="flex-1 min-w-[160px]">
+                {t('Viewing Day {day} archive. Live Day {live} is currently calculating.', {
+                  day: viewingDay,
+                  live: game?.currentDay ?? viewingDay,
+                })}
+              </span>
+              <button
+                onClick={() => {
+                  setIsInspectingClosedPhase(false);
+                  if (game) {
+                    const prevDay = Math.max(1, game.currentDay - 1);
+                    setViewingDay(prevDay);
+                    loadGameState(prevDay);
+                  }
+                }}
+                className="px-2.5 py-1 bg-amber-500 text-zinc-950 rounded font-bold text-[11px] hover:bg-amber-400 flex items-center gap-1"
+              >
+                {t('Live Timer')} <ArrowRight className="w-3 h-3" />
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -1148,29 +1260,6 @@ export default function App() {
           />
         </div>
 
-        {/* Unsaved Plan Changes Warning (screen-wide, right under the header) */}
-        {hasUnsavedChanges && (
-          <div className="pointer-events-auto mx-auto mt-2 px-2 w-fit max-w-full">
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 bg-red-950/90 backdrop-blur-md border border-red-700/70 rounded-xl px-3 py-1.5 shadow-xl">
-              <span className="relative flex h-2 w-2 shrink-0">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-60" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500" />
-              </span>
-              <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-red-400" />
-              <span className="text-[11px] md:text-xs font-semibold text-red-200 text-left">
-                Unsaved plan changes — your edits haven&apos;t been submitted to the server.
-              </span>
-              <button
-                onClick={handleSubmitActions}
-                disabled={isSavingActions}
-                className="px-2.5 py-1 bg-red-600 hover:bg-red-500 text-white text-[11px] font-bold rounded-lg disabled:opacity-50 shrink-0"
-              >
-                {isSavingActions ? 'Saving…' : 'Submit Now'}
-              </button>
-            </div>
-          </div>
-        )}
-
         {/* Desktop: Floating Side Panels (Action Deck left, Timeline center, Roster right) */}
         {!isMobile && !showClosedPhaseOverlay && (
           <div className="w-full flex-1 flex justify-between items-end p-6 pointer-events-none">
@@ -1180,9 +1269,13 @@ export default function App() {
                 isViewingHistoricalDay ? (
                   <div className="bg-zinc-950/80 backdrop-blur-md border border-zinc-800 rounded-2xl p-4 text-xs text-zinc-400">
                     <p className="font-semibold text-zinc-300 mb-1">
-                      Viewing Day {viewingDay} Archive
+                      {t('Viewing Day {day} Archive', { day: viewingDay })}
                     </p>
-                    <p>Actions can only be planned for the live day (Day {game?.currentDay}).</p>
+                    <p>
+                      {t('Actions can only be planned for the live day (Day {day}).', {
+                        day: game?.currentDay ?? viewingDay,
+                      })}
+                    </p>
                   </div>
                 ) : (
                 <ActionPlanner
@@ -1219,15 +1312,15 @@ export default function App() {
                 )
               ) : (
                 <div className="bg-zinc-950/80 backdrop-blur-md border border-zinc-800 rounded-2xl p-4 text-xs text-zinc-400">
-                  <p className="font-semibold text-zinc-300 mb-1">Staging Area</p>
-                  <p>Actions will become available once Day 1 is launched by an administrator.</p>
+                  <p className="font-semibold text-zinc-300 mb-1">{t('Staging Area')}</p>
+                  <p>{t('Actions will become available once Day 1 is launched by an administrator.')}</p>
                 </div>
               )}
             </div>
 
             {/* Bottom-Center: Floating Timeline Scrubber */}
             {!isUnstarted && (
-              <div className="pointer-events-auto max-w-xl w-full mb-1">
+              <div className="pointer-events-auto max-w-2xl w-full mb-1">
                 <DaySelector
                   currentDay={game?.currentDay || 1}
                   viewingDay={viewingDay}
@@ -1235,6 +1328,7 @@ export default function App() {
                   isGameOver={isGameOver}
                   onSelectDay={handleSelectDay}
                   onProgressToNextDay={handleProgressToNextDay}
+                  onPlayFullTimeline={player?.isAdmin ? handleFullMatchReplay : undefined}
                   isAnimating={isAnimating}
                   isClosed={isClosed}
                   maxVisibleDay={highestVisibleDay}
@@ -1270,9 +1364,13 @@ export default function App() {
               isViewingHistoricalDay ? (
                 <div className="bg-zinc-950/90 backdrop-blur-md border border-zinc-800 rounded-2xl p-3 text-xs text-zinc-400">
                   <p className="font-semibold text-zinc-300 mb-1">
-                    Viewing Day {viewingDay} Archive
+                    {t('Viewing Day {day} Archive', { day: viewingDay })}
                   </p>
-                  <p>Actions can only be planned for the live day (Day {game?.currentDay}).</p>
+                  <p>
+                    {t('Actions can only be planned for the live day (Day {day}).', {
+                      day: game?.currentDay ?? viewingDay,
+                    })}
+                  </p>
                 </div>
               ) : (
                 <ActionPlanner
@@ -1310,8 +1408,8 @@ export default function App() {
               )
             ) : (
               <div className="bg-zinc-950/90 backdrop-blur-md border border-zinc-800 rounded-2xl p-3 text-xs text-zinc-400">
-                <p className="font-semibold text-zinc-300 mb-1">Staging Area</p>
-                <p>Actions will become available once Day 1 is launched by an administrator.</p>
+                <p className="font-semibold text-zinc-300 mb-1">{t('Staging Area')}</p>
+                <p>{t('Actions will become available once Day 1 is launched by an administrator.')}</p>
               </div>
             ))}
 
@@ -1335,6 +1433,7 @@ export default function App() {
               isGameOver={isGameOver}
               onSelectDay={handleSelectDay}
               onProgressToNextDay={handleProgressToNextDay}
+              onPlayFullTimeline={player?.isAdmin ? handleFullMatchReplay : undefined}
               isAnimating={isAnimating}
               isClosed={isClosed}
               maxVisibleDay={highestVisibleDay}
@@ -1354,7 +1453,7 @@ export default function App() {
               }`}
             >
               <Swords className="w-4 h-4" />
-              Plan
+              {t('Plan')}
               {plannedActions.length > 0 && !isViewingHistoricalDay && (
                 <span
                   className={`ml-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-mono ${
@@ -1374,7 +1473,7 @@ export default function App() {
               }`}
             >
               <Users className="w-4 h-4" />
-              Players
+              {t('Players')}
             </button>
           </div>
         </div>
@@ -1386,6 +1485,7 @@ export default function App() {
           events={playbackEvents}
           fromDay={viewingDay}
           toDay={playbackTargetDay}
+          autoPlay={playbackAutoPlay}
           onEventStep={handleAnimationStep}
           onComplete={handleCompleteAnimation}
         />

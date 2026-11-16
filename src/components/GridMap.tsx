@@ -9,6 +9,7 @@ import {
   isSquareInPlayerRange,
 } from '../game/rules';
 import { ParticleLayer } from './ParticleLayer';
+import { useI18n } from '../i18n';
 
 type GridPlayer = GameStateData['players'][string];
 
@@ -94,6 +95,9 @@ export const GridMap: React.FC<GridMapProps> = ({
   isPlayback = false,
   topInset = 0,
 }) => {
+  const { t, language } = useI18n();
+  const upper = (value: string) =>
+    value.toLocaleUpperCase(language === 'tr' ? 'tr-TR' : 'en-US');
   const [zoom, setZoom] = useState(1);
   const [smoothZoom, setSmoothZoom] = useState(true);
   const [showOwnMines, setShowOwnMines] = useState(true);
@@ -519,7 +523,9 @@ export const GridMap: React.FC<GridMapProps> = ({
       {/* Desktop: Grid Map Controls Toolbar (mobile uses the side zoom cluster) */}
       <div className="hidden md:flex absolute top-16 left-6 z-20 items-center gap-2 bg-zinc-950/80 backdrop-blur border border-zinc-800 rounded-xl px-3 py-1.5 shadow-lg text-xs">
         <Crosshair className="w-4 h-4 text-amber-400" />
-        <span className="font-bold text-zinc-200">{GRID_SIZE}×{GRID_SIZE} SECTOR GRID</span>
+        <span className="font-bold text-zinc-200">
+          {GRID_SIZE}×{GRID_SIZE} {t('SECTOR GRID')}
+        </span>
         {hoverCoord && (
           <span className="font-mono text-amber-300 bg-zinc-900 px-2 py-0.5 rounded border border-zinc-700 text-[11px]">
             ({hoverCoord.x}, {hoverCoord.y})
@@ -527,13 +533,13 @@ export const GridMap: React.FC<GridMapProps> = ({
         )}
         {selectedTile && (
           <span className="font-mono text-emerald-400 bg-emerald-950/70 px-2 py-0.5 rounded border border-emerald-800 text-[11px]">
-            Target: ({selectedTile.x}, {selectedTile.y})
+            {t('Target: ({x}, {y})', { x: selectedTile.x, y: selectedTile.y })}
           </span>
         )}
         {ghostPosition && (
           <span className="font-mono text-cyan-400 bg-cyan-950/70 px-2 py-0.5 rounded border border-cyan-800 text-[11px] flex items-center gap-1">
             <Footprints className="w-3 h-3" />
-            Ghost: ({ghostPosition.x}, {ghostPosition.y})
+            {t('Ghost: ({x}, {y})', { x: ghostPosition.x, y: ghostPosition.y })}
           </span>
         )}
 
@@ -541,12 +547,12 @@ export const GridMap: React.FC<GridMapProps> = ({
           <div className="flex items-center gap-2 border-l border-zinc-800 pl-2 ml-1 text-[9px] font-semibold text-zinc-300">
             <span className="flex items-center gap-1">
               <span className="w-2 h-2 rounded-sm bg-sky-500/70 ring-1 ring-sky-300/60" />
-              Current
+              {t('Current')}
             </span>
             {ghostPosition && isGhostRangeAction && (
               <span className="flex items-center gap-1">
                 <span className="w-2 h-2 rounded-sm bg-fuchsia-500/70 ring-1 ring-fuchsia-300/60" />
-                Projected
+                {t('Projected')}
               </span>
             )}
           </div>
@@ -556,7 +562,7 @@ export const GridMap: React.FC<GridMapProps> = ({
           <button
             onClick={() => setZoomAnchored(zoom - 0.1)}
             className="p-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300"
-            title="Zoom Out"
+            title={t('Zoom Out')}
           >
             <ZoomOut className="w-3.5 h-3.5" />
           </button>
@@ -566,14 +572,14 @@ export const GridMap: React.FC<GridMapProps> = ({
           <button
             onClick={() => setZoomAnchored(zoom + 0.1)}
             className="p-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300"
-            title="Zoom In"
+            title={t('Zoom In')}
           >
             <ZoomIn className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={() => setZoomAnchored(1)}
             className="p-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300"
-            title="Reset Zoom"
+            title={t('Reset Zoom')}
           >
             <Maximize2 className="w-3.5 h-3.5" />
           </button>
@@ -585,7 +591,7 @@ export const GridMap: React.FC<GridMapProps> = ({
                   ? 'bg-zinc-900 border-zinc-700 text-amber-300'
                   : 'bg-zinc-950 border-zinc-800 text-zinc-500'
               }`}
-              title={showOwnMines ? 'Hide my mines (screenshot mode)' : 'Show my mines'}
+              title={showOwnMines ? t('Hide my mines (screenshot mode)') : t('Show my mines')}
               aria-pressed={!showOwnMines}
             >
               {showOwnMines ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
@@ -599,21 +605,21 @@ export const GridMap: React.FC<GridMapProps> = ({
         <button
           onClick={() => setZoomAnchored(zoom + 0.1)}
           className="p-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300"
-          title="Zoom In"
+          title={t('Zoom In')}
         >
           <ZoomIn className="w-4 h-4" />
         </button>
         <button
           onClick={() => setZoomAnchored(1)}
           className="p-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300"
-          title="Reset Zoom"
+          title={t('Reset Zoom')}
         >
           <Maximize2 className="w-4 h-4" />
         </button>
         <button
           onClick={() => setZoomAnchored(zoom - 0.1)}
           className="p-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300"
-          title="Zoom Out"
+          title={t('Zoom Out')}
         >
           <ZoomOut className="w-4 h-4" />
         </button>
@@ -625,7 +631,7 @@ export const GridMap: React.FC<GridMapProps> = ({
                 ? 'bg-zinc-900 border-zinc-700 text-amber-300'
                 : 'bg-zinc-950 border-zinc-800 text-zinc-500'
             }`}
-            title={showOwnMines ? 'Hide my mines (screenshot mode)' : 'Show my mines'}
+            title={showOwnMines ? t('Hide my mines (screenshot mode)') : t('Show my mines')}
             aria-pressed={!showOwnMines}
           >
             {showOwnMines ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
@@ -831,10 +837,15 @@ export const GridMap: React.FC<GridMapProps> = ({
                         }`}
                         title={
                           b.type === 'bank'
-                            ? `BANK (HP: ${b.health}) — Value: ${b.value ?? 1} (claim next round: ${getBankClaimValue(
-                                b.value ?? 1
-                              )})`
-                            : `${b.type.toUpperCase()} (HP: ${b.health})`
+                            ? t('BANK (HP: {hp}) — Value: {value} (claim next round: {claim})', {
+                                hp: b.health,
+                                value: b.value ?? 1,
+                                claim: getBankClaimValue(b.value ?? 1),
+                              })
+                            : t('{type} (HP: {hp})', {
+                                type: upper(t(b.type)),
+                                hp: b.health,
+                              })
                         }
                       >
                         {b.type === 'mine' && (
@@ -859,8 +870,8 @@ export const GridMap: React.FC<GridMapProps> = ({
                           <div
                             title={
                               b.ownerId === currentPlayer?.id && b.isArmed && !b.isSpent
-                                ? 'READY SILO - click to target a nuke'
-                                : `SILO (HP: ${b.health})`
+                                ? t('READY SILO - click to target a nuke')
+                                : t('SILO (HP: {hp})', { hp: b.health })
                             }
                             className={`p-0.5 rounded border ${
                               b.isArmed
@@ -894,19 +905,20 @@ export const GridMap: React.FC<GridMapProps> = ({
                               {b.value ?? 1}
                             </span>
                             <div className="pointer-events-none absolute left-1/2 bottom-full z-50 mb-1 hidden -translate-x-1/2 whitespace-nowrap rounded-md border border-amber-700 bg-zinc-950/95 px-2 py-1 text-[9px] font-normal text-amber-200 shadow-xl group-hover/bank:block">
-                              <div className="font-bold text-amber-300">BANK</div>
+                              <div className="font-bold text-amber-300">{t('BANK')}</div>
                               <div>
-                                Value now: <span className="font-mono font-bold">{b.value ?? 1}</span>
+                                {t('Value now:')}{' '}
+                                <span className="font-mono font-bold">{b.value ?? 1}</span>
                               </div>
                               <div>
-                                Claim next round:{' '}
+                                {t('Claim next round:')}{' '}
                                 <span className="font-mono font-bold text-emerald-300">
                                   {getBankClaimValue(b.value ?? 1)}
                                 </span>
                               </div>
                               {b.ownerId === currentPlayer?.id && (
                                 <div className="font-semibold text-cyan-300">
-                                  Click with Build to claim
+                                  {t('Click with Build to claim')}
                                 </div>
                               )}
                             </div>
@@ -919,19 +931,23 @@ export const GridMap: React.FC<GridMapProps> = ({
                     {plannedAttack && (
                       <div
                         className="absolute inset-[2px] rounded-sm border-2 border-red-500/80 bg-red-500/10 pointer-events-none z-10"
-                        title={`Planned Attack${plannedAttack.targetPlayerId ? ' on enemy operative' : ''}`}
+                        title={
+                          plannedAttack.targetPlayerId
+                            ? t('Planned Attack on enemy operative')
+                            : t('Planned Attack')
+                        }
                       />
                     )}
                     {plannedClaim && (
                       <div
                         className="absolute inset-[2px] rounded-sm border-2 border-dashed border-amber-400/80 pointer-events-none z-10"
-                        title="Planned Bank Claim"
+                        title={t('Planned Bank Claim')}
                       />
                     )}
                     {plannedBuild && (
                       <div
                         className="absolute inset-0 flex items-center justify-center pointer-events-none z-10"
-                        title={`Planned ${plannedBuild.buildingType}`}
+                        title={t('Planned {type}', { type: t(plannedBuild.buildingType!) })}
                       >
                         <img
                           src={BUILDING_ICON_SRC[plannedBuild.buildingType!]}
@@ -952,7 +968,7 @@ export const GridMap: React.FC<GridMapProps> = ({
                           <Footprints className="w-4 h-4 text-cyan-300" />
                         </div>
                         <div className="absolute top-7 whitespace-nowrap bg-cyan-950/90 text-cyan-300 text-[8px] font-mono font-bold px-1 rounded border border-cyan-700/80 shadow">
-                          PLANNED POS
+                          {t('PLANNED POS')}
                         </div>
                       </div>
                     )}
@@ -1195,7 +1211,7 @@ export const GridMap: React.FC<GridMapProps> = ({
                               fontWeight="black"
                               textAnchor="middle"
                             >
-                              EXPLOSION! -1 HP
+                              {t('EXPLOSION! -1 HP')}
                             </text>
                           );
                         })()}
@@ -1244,7 +1260,7 @@ export const GridMap: React.FC<GridMapProps> = ({
                                 textAnchor="middle"
                                 alignmentBaseline="central"
                               >
-                                NUCLEAR BLAST
+                                {t('NUCLEAR BLAST')}
                               </text>
                             </>
                           );
