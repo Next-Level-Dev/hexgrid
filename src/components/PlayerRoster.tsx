@@ -36,6 +36,28 @@ export const PlayerRoster: React.FC<PlayerRosterProps> = ({
   const statePlayers = state?.players || {};
   const priorityOrder = state?.playerPriorityOrder || [];
 
+  // The roster is a registry of everyone registered for the match, so it must
+  // not depend on a live game snapshot being present (and must not hide
+  // non-admin players behind a viewer role check).
+  const rosterPlayers: Player[] =
+    allPlayers.length > 0
+      ? allPlayers
+      : Object.values(statePlayers).map((snap) => ({
+          id: snap.id,
+          username: snap.username,
+          avatarUrl: snap.avatarUrl,
+          health: snap.health,
+          points: snap.points,
+          x: snap.x,
+          y: snap.y,
+          isAlive: snap.isAlive,
+          peaceVote: snap.peaceVote,
+          isAdmin: false,
+          tokens: 0,
+          stats: { gamesPlayed: 0, worldPeaces: 0, lastOneStandings: 0, deaths: 0 },
+          games: {},
+        }));
+
   return (
     <div className="bg-zinc-950/95 backdrop-blur-md border border-zinc-800 rounded-2xl shadow-xl flex flex-col transition-all overflow-hidden w-full">
       {/* Header */}
@@ -44,7 +66,7 @@ export const PlayerRoster: React.FC<PlayerRosterProps> = ({
           <Users className="w-4 h-4 text-amber-400" />
           <h3 className="text-xs font-bold uppercase tracking-wider text-white">
             {t('OPERATIVES ({count} Active)', {
-              count: Object.values(statePlayers).filter((p) => p.isAlive).length,
+              count: rosterPlayers.length,
             })}
           </h3>
         </div>
@@ -58,10 +80,10 @@ export const PlayerRoster: React.FC<PlayerRosterProps> = ({
       </div>
 
       {!isCollapsed && (
-        <div className="p-3 md:p-3.5 flex flex-col gap-3 max-h-[500px] max-md:max-h-[38vh] overflow-y-auto scrollbar-thin">
+        <div className="p-3 md:p-3.5 flex flex-col gap-3 max-h-[700px] max-md:max-h-[62vh] overflow-y-auto scrollbar-thin">
           {/* Operatives List */}
           <div className="flex flex-col gap-1.5">
-            {allPlayers.map((p) => {
+            {rosterPlayers.map((p) => {
               const snap = statePlayers[p.id];
               const isAlive = snap ? snap.isAlive : p.isAlive;
               const health = snap ? snap.health : p.health;
@@ -170,7 +192,7 @@ export const PlayerRoster: React.FC<PlayerRosterProps> = ({
             </h4>
             <div className="flex flex-col gap-1">
               {priorityOrder.map((pid, idx) => {
-                const playerObj = allPlayers.find((p) => p.id === pid);
+                const playerObj = rosterPlayers.find((p) => p.id === pid);
                 if (!playerObj) return null;
                 return (
                   <div

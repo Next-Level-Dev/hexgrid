@@ -60,3 +60,34 @@ label {
   border: 2px solid #f87171;
   background-color: rgba(248, 113, 113, 0.35);
 }
+
+@keyframes building-fade-in {
+  from {
+    opacity: 0;
+    transform: scale(0.55);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes building-fade-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.55);
+  }
+}
+
+.building-fade-in {
+  animation: building-fade-in 500ms ease-out both;
+}
+
+.building-fade-out {
+  animation: building-fade-out 500ms ease-in both;
+  pointer-events: none;
+}

@@ -68,6 +68,7 @@ interface GridMapProps {
   mapSize: number;
   maxHealth?: number;
   playersOverride?: Record<string, GridPlayer> | null;
+  buildingsOverride?: (Building & { animationPhase?: 'fade-in' | 'fade-out' })[] | null;
   inspectPlayerId?: string | null;
   plannedActions?: ActionData[];
   isPlayback?: boolean;
@@ -90,6 +91,7 @@ export const GridMap: React.FC<GridMapProps> = ({
   mapSize,
   maxHealth = DEFAULT_PLAYER_HEALTH,
   playersOverride = null,
+  buildingsOverride = null,
   inspectPlayerId = null,
   plannedActions = [],
   isPlayback = false,
@@ -160,10 +162,11 @@ export const GridMap: React.FC<GridMapProps> = ({
       (b) => b.type === 'mine' && b.ownerId === currentPlayer.id
     );
 
-  const buildingsByCoord: Record<string, Building[]> = {};
-  if (state?.buildings) {
-    state.buildings.forEach((b) => {
-      if (b.type === 'mine' && b.ownerId === currentPlayer?.id && !showOwnMines) {
+  const buildingsByCoord: Record<string, (Building & { animationPhase?: 'fade-in' | 'fade-out' })[]> = {};
+  const sourceBuildings = buildingsOverride ?? state?.buildings ?? [];
+  if (sourceBuildings) {
+    sourceBuildings.forEach((b) => {
+      if (b.type === 'mine' && b.ownerId === currentPlayer?.id && !showOwnMines && !isPlayback) {
         return;
       }
       const key = `${b.x},${b.y}`;
@@ -833,7 +836,11 @@ export const GridMap: React.FC<GridMapProps> = ({
                       <div
                         key={b.id}
                         className={`absolute inset-0 flex items-center justify-center ${
-                          (b as any).transparent ? 'opacity-40' : ''
+                          b.animationPhase === 'fade-in'
+                            ? 'building-fade-in'
+                            : b.animationPhase === 'fade-out'
+                              ? 'building-fade-out'
+                              : ''
                         }`}
                         title={
                           b.type === 'bank'

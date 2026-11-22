@@ -97,6 +97,8 @@ export default function App() {
   const [playbackBasePlayers, setPlaybackBasePlayers] = useState<
     Record<string, GameStateData['players'][string]> | null
   >(null);
+  const [playbackBaseBuildings, setPlaybackBaseBuildings] = useState<Building[]>([]);
+  const [playbackTargetBuildings, setPlaybackTargetBuildings] = useState<Building[]>([]);
   const [playbackEventIndex, setPlaybackEventIndex] = useState<number>(-1);
   const [playbackAutoPlay, setPlaybackAutoPlay] = useState<boolean>(false);
   const [fullReplayEndDay, setFullReplayEndDay] = useState<number | null>(null);
@@ -467,6 +469,69 @@ export default function App() {
     game?.playerHealth,
   ]);
 
+  // Rebuild the board buildings at the current replay step. New buildings fade
+  // in and destroyed ones fade out so the timelapse never snaps them in or out.
+  const animationBuildings = useMemo<
+    (Building & { animationPhase?: 'fade-in' | 'fade-out' })[] | null
+  >(() => {
+    if (!isAnimating) return null;
+
+    const applyEvents = (upToIndex: number) => {
+      const result = playbackBaseBuildings.map((b) => ({ ...b }));
+      const events = playbackEvents ?? [];
+      for (let i = 0; i <= upToIndex && i < events.length; i++) {
+        const evt = events[i];
+        if (evt.type === 'build' && evt.buildingId) {
+          if (!result.some((b) => b.id === evt.buildingId)) {
+            const built =
+              playbackTargetBuildings.find((b) => b.id === evt.buildingId) ??
+              (evt.buildingType && evt.toX !== undefined && evt.toY !== undefined
+                ? {
+                    id: evt.buildingId,
+                    type: evt.buildingType,
+                    ownerId: evt.playerId ?? '',
+                    x: evt.toX,
+                    y: evt.toY,
+                    health: 1,
+                  }
+                : null);
+            if (built) result.push({ ...built });
+          }
+        } else if (evt.type === 'building_destroyed' && evt.buildingId) {
+          const index = result.findIndex((b) => b.id === evt.buildingId);
+          if (index !== -1) result.splice(index, 1);
+        }
+      }
+      return result;
+    };
+
+    const current = applyEvents(playbackEventIndex);
+    const previous = applyEvents(playbackEventIndex - 1);
+    const currentIds = new Set(current.map((b) => b.id));
+    const previousIds = new Set(previous.map((b) => b.id));
+
+    const animated: (Building & { animationPhase?: 'fade-in' | 'fade-out' })[] = current.map(
+      (b) => ({
+        ...b,
+        animationPhase: previousIds.has(b.id) ? undefined : ('fade-in' as const),
+      })
+    );
+
+    for (const b of previous) {
+      if (!currentIds.has(b.id)) {
+        animated.push({ ...b, animationPhase: 'fade-out' });
+      }
+    }
+
+    return animated;
+  }, [
+    isAnimating,
+    playbackBaseBuildings,
+    playbackTargetBuildings,
+    playbackEvents,
+    playbackEventIndex,
+  ]);
+
   const flashTileAt = useCallback((x: number, y: number, kind: 'valid' | 'invalid') => {
     setFlashTile({ x, y, kind });
     if (flashTimerRef.current !== null) {
@@ -769,6 +834,8 @@ export default function App() {
     }
 
     setPlaybackBasePlayers(baseState.players);
+    setPlaybackBaseBuildings(baseState.buildings ?? []);
+    setPlaybackTargetBuildings([]);
     setPlaybackEvents(null);
     setPlaybackTargetDay(null);
     setPlaybackEventIndex(-1);
@@ -780,6 +847,7 @@ export default function App() {
       if (!res.ok) throw new Error(`Failed to load Day ${nextDay} state`);
       const data = await res.json();
       if (!data.state) throw new Error(`Day ${nextDay} state missing`);
+      setPlaybackTargetBuildings((data.state as GameStateData).buildings ?? []);
       const rawEvents: GameEngineEvent[] = data.state.events || [];
       const events = rawEvents.filter((evt) => {
         const isMineBuild = evt.type === 'build' && evt.buildingType === 'mine';
@@ -796,6 +864,8 @@ export default function App() {
       setPlaybackEvents(null);
       setPlaybackTargetDay(null);
       setPlaybackBasePlayers(null);
+      setPlaybackBaseBuildings([]);
+      setPlaybackTargetBuildings([]);
       setPlaybackEventIndex(-1);
       setPlaybackAutoPlay(false);
       setActiveFx(null);
@@ -889,6 +959,8 @@ export default function App() {
     setPlaybackEvents(null);
     setPlaybackTargetDay(null);
     setPlaybackBasePlayers(null);
+    setPlaybackBaseBuildings([]);
+    setPlaybackTargetBuildings([]);
     setPlaybackEventIndex(-1);
     setPlaybackAutoPlay(false);
     setFullReplayEndDay(null);
@@ -1111,6 +1183,7 @@ export default function App() {
           mapSize={mapSize}
           maxHealth={maxHealth}
           playersOverride={isAnimating ? animationPlayers : null}
+          buildingsOverride={isAnimating ? animationBuildings : null}
           inspectPlayerId={hoveredPlayerId}
           plannedActions={canPlanActions ? plannedActions : []}
           isPlayback={isAnimating}
