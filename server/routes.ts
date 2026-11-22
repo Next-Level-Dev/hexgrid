@@ -311,7 +311,18 @@ apiRouter.get('/game/current', (req: AuthenticatedRequest, res: Response) => {
     }
   }
 
+  const version = `${game.id}:${game.revision}:${lastDayViewed}:${peaceVote}`;
+  const requestedVersion = typeof req.query.version === 'string' ? req.query.version : '';
+  res.set('Cache-Control', 'no-store');
+
+  if (requestedVersion === version) {
+    res.json({ version, secondsRemaining, unchanged: true });
+    return;
+  }
+
   res.json({
+    version,
+    secondsRemaining,
     game,
     timer: {
       phase: game.phase,

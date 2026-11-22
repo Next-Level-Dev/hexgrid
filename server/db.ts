@@ -58,6 +58,7 @@ class GameDatabase {
         mine_limit INTEGER NOT NULL DEFAULT ${DEFAULT_MINE_LIMIT},
         mine_limit_increase_days INTEGER NOT NULL DEFAULT ${DEFAULT_MINE_LIMIT_INCREASE_DAYS},
         assassination_cost INTEGER NOT NULL DEFAULT ${DEFAULT_ASSASSINATION_COST},
+        revision INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL
       );
     `);
@@ -82,6 +83,7 @@ class GameDatabase {
       'assassination_cost',
       `INTEGER NOT NULL DEFAULT ${DEFAULT_ASSASSINATION_COST}`
     );
+    this.ensureColumn('games', 'revision', 'INTEGER NOT NULL DEFAULT 0');
 
     // Table: game_states
     this.db.exec(`
@@ -203,12 +205,16 @@ class GameDatabase {
   private mapGameRow(row: any): GameRecord {
     const { config, changed } = this.normalizeBuildingConfig(row.enabled_buildings);
     if (changed) {
-      const stmt = this.db.prepare('UPDATE games SET enabled_buildings = ? WHERE id = ?');
+      const stmt = this.db.prepare(
+        'UPDATE games SET enabled_buildings = ?, revision = revision + 1 WHERE id = ?'
+      );
       stmt.run(JSON.stringify(config), row.id);
+      row.revision = Number(row.revision) + 1;
     }
 
     return {
       id: row.id,
+      revision: Number(row.revision) || 0,
       currentDay: row.current_day,
       phase: row.phase,
       phaseStartedAt: row.phase_started_at,
@@ -250,8 +256,8 @@ class GameDatabase {
 
   createGame(game: GameRecord) {
     const stmt = this.db.prepare(`
-      INSERT INTO games (id, current_day, phase, phase_started_at, phase_ends_at, locked, end_reason, map_size, player_health, reward_pool, enabled_buildings, mine_limit, mine_limit_increase_days, assassination_cost, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO games (id, current_day, phase, phase_started_at, phase_ends_at, locked, end_reason, map_size, player_health, reward_pool, enabled_buildings, mine_limit, mine_limit_increase_days, assassination_cost, revision, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       game.id,
@@ -268,6 +274,7 @@ class GameDatabase {
       game.mineLimit,
       game.mineLimitIncreaseDays,
       game.assassinationCost,
+      game.revision,
       new Date().toISOString()
     );
   }
@@ -287,7 +294,8 @@ class GameDatabase {
         enabled_buildings = ?,
         mine_limit = ?,
         mine_limit_increase_days = ?,
-        assassination_cost = ?
+        assassination_cost = ?,
+        revision = revision + 1
       WHERE id = ?
     `);
     stmt.run(
@@ -309,13 +317,15 @@ class GameDatabase {
   }
 
   lockGame(id: string): boolean {
-    const stmt = this.db.prepare('UPDATE games SET locked = 1 WHERE id = ? AND locked = 0');
+    const stmt = this.db.prepare(
+      'UPDATE games SET locked = 1, revision = revision + 1 WHERE id = ? AND locked = 0'
+    );
     const result = stmt.run(id) as any;
     return result.changes > 0;
   }
 
   unlockGame(id: string) {
-    const stmt = this.db.prepare('UPDATE games SET locked = 0 WHERE id = ?');
+    const stmt = this.db.prepare('UPDATE games SET locked = 0, revision = revision + 1 WHERE id = ?');
     stmt.run(id);
   }
 

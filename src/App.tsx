@@ -88,6 +88,9 @@ export default function App() {
   const currentStateDayRef = useRef<number>(0);
   const loadStateRequestRef = useRef<number>(0);
   const hasLoadedGameRef = useRef<boolean>(false);
+  const gameVersionRef = useRef<string>('');
+  const expiryPendingRef = useRef<boolean>(false);
+  const expiryRetriesRef = useRef<number>(0);
   const headerRef = useRef<HTMLDivElement>(null);
   const [headerHeight, setHeaderHeight] = useState<number>(0);
 
@@ -168,38 +171,46 @@ export default function App() {
 
   const loadGameCurrent = async () => {
     try {
-      const res = await fetch('/api/game/current');
+      const query = gameVersionRef.current
+        ? `?version=${encodeURIComponent(gameVersionRef.current)}`
+        : '';
+      const res = await fetch(`/api/game/current${query}`);
       const data = await res.json();
-      if (data.game) {
-        setGame(data.game);
-        setSecondsRemaining(data.timer.secondsRemaining);
-
-        if (data.game.currentDay === 0) {
-          setViewingDay(0);
-          setLastDayViewed(0);
-          setCurrentState(null);
-          setLoadedStateDay(0);
-          currentStateDayRef.current = 0;
-        } else {
-          const ldv = data.userContext?.lastDayViewed || data.game.currentDay;
-          setLastDayViewed(ldv);
-
-          // The day being calculated during the closed phase stays hidden until
-          // the open phase begins, so never target it while the game is closed.
-          const highestVisibleDay = getHighestVisibleDay(data.game);
-          const previousView = viewingDayRef.current;
-          const target = Math.max(
-            1,
-            Math.min(
-              hasLoadedGameRef.current && previousView > 0 ? previousView : ldv,
-              highestVisibleDay || 1
-            )
-          );
-          hasLoadedGameRef.current = true;
-
-          if (previousView !== target) setViewingDay(target);
-          if (currentStateDayRef.current !== target) loadGameState(target);
+      if (typeof data.version === 'string') gameVersionRef.current = data.version;
+      if (typeof data.secondsRemaining === 'number') {
+        if (data.secondsRemaining > 1) {
+          expiryPendingRef.current = false;
+          expiryRetriesRef.current = 0;
         }
+        setSecondsRemaining(data.secondsRemaining);
+      }
+      if (data.unchanged || !data.game) return;
+
+      if (data.game.currentDay === 0) {
+        setViewingDay(0);
+        setLastDayViewed(0);
+        setCurrentState(null);
+        setLoadedStateDay(0);
+        currentStateDayRef.current = 0;
+      } else {
+        const ldv = data.userContext?.lastDayViewed || data.game.currentDay;
+        setLastDayViewed(ldv);
+
+        // The day being calculated during the closed phase stays hidden until
+        // the open phase begins, so never target it while the game is closed.
+        const highestVisibleDay = getHighestVisibleDay(data.game);
+        const previousView = viewingDayRef.current;
+        const target = Math.max(
+          1,
+          Math.min(
+            hasLoadedGameRef.current && previousView > 0 ? previousView : ldv,
+            highestVisibleDay || 1
+          )
+        );
+        hasLoadedGameRef.current = true;
+
+        if (previousView !== target) setViewingDay(target);
+        if (currentStateDayRef.current !== target) loadGameState(target);
       }
     } catch (err) {
       console.error('Failed to load current game:', err);
@@ -322,7 +333,11 @@ export default function App() {
     const timer = setInterval(() => {
       setSecondsRemaining((prev) => {
         if (prev <= 1) {
-          loadGameCurrent();
+          if (!expiryPendingRef.current) {
+            expiryPendingRef.current = true;
+            expiryRetriesRef.current = 0;
+            loadGameCurrent();
+          }
           return 0;
         }
         return prev - 1;
@@ -331,11 +346,19 @@ export default function App() {
 
     const poll = setInterval(() => {
       loadGameCurrent();
-    }, 20000);
+    }, 40000);
+
+    const expiryRetry = setInterval(() => {
+      if (expiryPendingRef.current && expiryRetriesRef.current < 2) {
+        expiryRetriesRef.current += 1;
+        loadGameCurrent();
+      }
+    }, 15000);
 
     return () => {
       clearInterval(timer);
       clearInterval(poll);
+      clearInterval(expiryRetry);
     };
   }, []);
 

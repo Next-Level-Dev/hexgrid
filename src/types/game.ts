@@ -136,6 +136,7 @@ export interface GameStateData {
 
 export interface GameRecord {
   id: string;
+  revision: number;
   currentDay: number;
   phase: Phase;
   phaseStartedAt: string; // ISO UTC

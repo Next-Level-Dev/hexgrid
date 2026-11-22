@@ -96,6 +96,7 @@ export class GameService {
 
     const game: GameRecord = {
       id: gameId,
+      revision: 0,
       currentDay: 0,
       phase: 'closed',
       phaseStartedAt: phaseStartedAt.toISOString(),
@@ -189,6 +190,7 @@ export class GameService {
 
     const game: GameRecord = {
       id: gameId,
+      revision: 0,
       currentDay: 1,
       phase: startingPhase,
       phaseStartedAt: phaseStartedAt.toISOString(),
