@@ -15,7 +15,7 @@ function createDefaultAdmin(): Player {
   const admin: Player = {
     id: DEFAULT_ADMIN_ID,
     username: DEFAULT_ADMIN_USERNAME,
-    avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=${DEFAULT_ADMIN_USERNAME}`,
+    avatarUrl: `https://api.dicebear.com/10.x/initial-face/svg?seed=${DEFAULT_ADMIN_USERNAME}`,
     health: 3,
     points: 1,
     tokens: 0,

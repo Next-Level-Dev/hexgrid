@@ -7,13 +7,31 @@
  * - Admin authorization checks on protected APIs
  */
 import crypto from 'crypto';
-import { Request, Response, NextFunction } from 'express';
+import { CookieOptions, Request, Response, NextFunction } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { db } from './db';
 import { Player } from '../src/types/game';
 
 export const SESSION_COOKIE_NAME = 'hexgrid_session';
 const SESSION_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000; // 3 months
+const SESSION_REFRESH_THRESHOLD_MS = 24 * 60 * 60 * 1000;
+
+function getSessionCookieOptions(): CookieOptions {
+  const secureOverride = process.env.SESSION_COOKIE_SECURE;
+  const options: CookieOptions = {
+    httpOnly: true,
+    secure:
+      secureOverride === undefined
+        ? process.env.NODE_ENV === 'production'
+        : secureOverride === 'true',
+    sameSite: 'lax',
+    maxAge: SESSION_MAX_AGE_MS,
+    path: '/',
+  };
+  const domain = process.env.SESSION_COOKIE_DOMAIN?.trim();
+  if (domain) options.domain = domain;
+  return options;
+}
 
 export function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
@@ -35,19 +53,20 @@ export function createPlayerSession(res: Response, player: Player): string {
   db.createSession(sessionId, player.id, tokenHash, expiresAt);
 
   // Set cookie
-  res.cookie(SESSION_COOKIE_NAME, token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-    maxAge: SESSION_MAX_AGE_MS,
-    path: '/',
-  });
+  res.cookie(SESSION_COOKIE_NAME, token, getSessionCookieOptions());
 
   return token;
 }
 
+export function clearPlayerSessionCookie(res: Response) {
+  const options = getSessionCookieOptions();
+  delete options.maxAge;
+  res.clearCookie(SESSION_COOKIE_NAME, options);
+}
+
 export interface AuthenticatedRequest extends Request {
   player?: Player;
+  sessionId?: string;
 }
 
 /**
@@ -75,10 +94,50 @@ export function authenticatePlayer(
     return next();
   }
 
+  if (new Date(session.expires_at).getTime() - Date.now() < SESSION_REFRESH_THRESHOLD_MS) {
+    const refreshedExpiry = new Date(Date.now() + SESSION_MAX_AGE_MS).toISOString();
+    db.touchSession(session.id, refreshedExpiry);
+    res.cookie(SESSION_COOKIE_NAME, String(token), getSessionCookieOptions());
+  }
+
   const player = db.getPlayer(session.player_id);
   if (player) {
     req.player = player;
+    req.sessionId = session.id;
   }
+  next();
+}
+
+export function requireSameOrigin(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  const origin = req.headers.origin;
+  const referer = req.headers.referer;
+  const source = origin || referer;
+
+  if (source) {
+    let sourceHost: string;
+    try {
+      sourceHost = new URL(source).host;
+    } catch {
+      res.status(403).json({ error: 'Invalid request origin' });
+      return;
+    }
+
+    const forwardedHost = req.headers['x-forwarded-host'];
+    const requestHost = (Array.isArray(forwardedHost)
+      ? forwardedHost[0]
+      : forwardedHost || req.headers.host
+    )?.split(',')[0];
+
+    if (!requestHost || sourceHost !== requestHost) {
+      res.status(403).json({ error: 'Cross-origin requests are not allowed' });
+      return;
+    }
+  }
+
   next();
 }
 

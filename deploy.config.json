@@ -4,5 +4,5 @@
   "nodeEnv": "production",
   "pm2ProcessName": "hexgrid-tactics",
   "useCaddy": true,
-  "caddyDomain": "game.local"
+  "caddyDomain": "lore.enia.net"
 }

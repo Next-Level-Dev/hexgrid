@@ -549,6 +549,18 @@ class GameDatabase {
     return stmt.get(tokenHash) as any;
   }
 
+  touchSession(sessionId: string, expiresAt: string) {
+    const stmt = this.db.prepare(
+      'UPDATE session_cookies SET expires_at = ? WHERE id = ? AND revoked = 0'
+    );
+    stmt.run(expiresAt, sessionId);
+  }
+
+  revokeSession(sessionId: string) {
+    const stmt = this.db.prepare('UPDATE session_cookies SET revoked = 1 WHERE id = ?');
+    stmt.run(sessionId);
+  }
+
   revokePlayerSessions(playerId: string) {
     const stmt = this.db.prepare('UPDATE session_cookies SET revoked = 1 WHERE player_id = ?');
     stmt.run(playerId);

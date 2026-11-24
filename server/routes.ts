@@ -11,7 +11,9 @@ import {
   authenticatePlayer,
   requireAuth,
   requireAdmin,
+  requireSameOrigin,
   createPlayerSession,
+  clearPlayerSessionCookie,
   generateSecureToken,
   hashToken,
 } from './auth';
@@ -40,6 +42,11 @@ import {
 } from '../src/game/rules';
 
 export const apiRouter = Router();
+
+apiRouter.use((_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+});
 
 apiRouter.use(authenticatePlayer);
 
@@ -277,13 +284,18 @@ apiRouter.patch('/players/profile', requireAuth, (req: AuthenticatedRequest, res
 });
 
 // Logout
-apiRouter.post('/auth/logout', (req: AuthenticatedRequest, res: Response) => {
-  if (req.player) {
-    db.revokePlayerSessions(req.player.id);
+apiRouter.post(
+  '/auth/logout',
+  requireSameOrigin,
+  requireAuth,
+  (req: AuthenticatedRequest, res: Response) => {
+    if (req.sessionId) {
+      db.revokeSession(req.sessionId);
+    }
+    clearPlayerSessionCookie(res);
+    res.json({ success: true });
   }
-  res.clearCookie('hexgrid_session');
-  res.json({ success: true });
-});
+);
 
 // --- Game Status & Schedule ---
 
@@ -715,7 +727,7 @@ apiRouter.post('/admin/players/:id/auth-link', requireAdmin, (req: Authenticated
   const rawToken = generateSecureToken();
   const tokenHash = hashToken(rawToken);
   const inviteId = uuidv4();
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(); // 7 days
+  const expiresAt = new Date(Date.now() + (30 * 24 * 60 * 60 * 1000)).toISOString(); // 30 days
 
   db.createInvitation(inviteId, tokenHash, player.id, player.username, req.player?.id || null, expiresAt);
 
