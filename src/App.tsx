@@ -186,6 +186,8 @@ export default function App() {
       }
       if (data.unchanged || !data.game) return;
 
+      setGame(data.game);
+
       if (data.game.currentDay === 0) {
         setViewingDay(0);
         setLastDayViewed(0);
