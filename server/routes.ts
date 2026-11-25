@@ -16,6 +16,10 @@ import {
   clearPlayerSessionCookie,
   generateSecureToken,
   hashToken,
+  hashPassword,
+  verifyPassword,
+  validatePassword,
+  INVITE_MAX_AGE_MS,
 } from './auth';
 import {
   ActionSubmission,
@@ -28,7 +32,6 @@ import {
 } from '../src/types/game';
 import {
   ALL_BUILDING_TYPES,
-  DEFAULT_MAP_SIZE,
   isValidMapSize,
   isValidPlayerHealth,
   isValidRewardPool,
@@ -38,7 +41,6 @@ import {
   getActionPriorityGroup,
   getMineLimitForDay,
   getNextMineLimitIncreaseDay,
-  generateSafeSpawnPosition,
 } from '../src/game/rules';
 
 export const apiRouter = Router();
@@ -199,55 +201,95 @@ apiRouter.get('/me', (req: AuthenticatedRequest, res: Response) => {
 });
 
 
-// Redeem invitation token
-apiRouter.post('/auth/redeem-invite', (req: AuthenticatedRequest, res: Response) => {
-  const { token } = req.body;
-  if (!token) {
-    res.status(400).json({ error: 'Token is required' });
-    return;
+type InviteLookup =
+  | { invite: any; player: Player }
+  | { error: string; status: number };
+
+function lookupInvitation(token: unknown): InviteLookup {
+  if (typeof token !== 'string' || !token.trim()) {
+    return { error: 'Invitation token is required', status: 400 };
   }
 
-  const tokenHash = hashToken(token);
-  const invite = db.getInvitationByHash(tokenHash);
+  const invite = db.getInvitationByHash(hashToken(token.trim()));
   if (!invite) {
-    res.status(400).json({ error: 'Invalid or expired invitation link' });
-    return;
+    return { error: 'Invalid or expired invitation link', status: 400 };
+  }
+  if (new Date(invite.expires_at).getTime() <= Date.now()) {
+    return { error: 'Invitation link has expired', status: 400 };
   }
 
-  if (new Date(invite.expires_at) < new Date()) {
-    res.status(400).json({ error: 'Invitation link has expired' });
-    return;
-  }
-
-  // Mark invitation used
-  db.markInvitationUsed(invite.id);
-
-  // Prefer the exact player the invitation was issued for. Older invitations
-  // only stored a username, so fall back to that.
-  let player = invite.player_id
-    ? db.getPlayer(invite.player_id) ?? undefined
-    : findPlayerByUsername(invite.username);
+  const player = invite.player_id
+    ? db.getPlayer(invite.player_id) ?? null
+    : findPlayerByUsername(invite.username) ?? null;
   if (!player) {
-    const existing = db.getAllPlayers().map((p) => ({ x: p.x, y: p.y }));
-    const mapSize = db.getCurrentGame()?.mapSize ?? DEFAULT_MAP_SIZE;
-    const safePos = generateSafeSpawnPosition(existing, mapSize);
+    return { error: 'The invited operative no longer exists', status: 404 };
+  }
 
-    player = {
-      id: uuidv4(),
-      username: invite.username,
-      avatarUrl: `https://api.dicebear.com/10.x/initial-face/svg?seed=${encodeURIComponent(invite.username)}`,
-      health: 3,
-      points: 1,
-      tokens: 0,
-      x: safePos.x,
-      y: safePos.y,
-      isAlive: true,
-      isAdmin: false,
-      peaceVote: 'no',
-      stats: { gamesPlayed: 0, worldPeaces: 0, lastOneStandings: 0, deaths: 0 },
-      games: {},
-    };
-    db.savePlayer(player);
+  return { invite, player };
+}
+
+apiRouter.get('/auth/invite/:token', (req: AuthenticatedRequest, res: Response) => {
+  const lookup = lookupInvitation(req.params.token);
+  if ('error' in lookup) {
+    res.status(lookup.status).json({ error: lookup.error });
+    return;
+  }
+
+  res.json({
+    invitation: {
+      playerId: lookup.player.id,
+      username: lookup.player.username,
+      avatarUrl: lookup.player.avatarUrl,
+      expiresAt: lookup.invite.expires_at,
+    },
+  });
+});
+
+apiRouter.post(
+  '/auth/set-password',
+  requireSameOrigin,
+  (req: AuthenticatedRequest, res: Response) => {
+    const lookup = lookupInvitation(req.body?.token);
+    if ('error' in lookup) {
+      res.status(lookup.status).json({ error: lookup.error });
+      return;
+    }
+    if (lookup.player.isAdmin) {
+      res.status(403).json({
+        error: 'The admin password can only be set with ADMIN_PASSWORD in the server .env file.',
+      });
+      return;
+    }
+
+    const passwordError = validatePassword(req.body?.password);
+    if (passwordError) {
+      res.status(400).json({ error: passwordError });
+      return;
+    }
+
+    db.setPlayerPasswordHash(lookup.player.id, hashPassword(req.body.password));
+    db.revokePlayerSessions(lookup.player.id);
+    db.markInvitationUsed(lookup.invite.id);
+    if (req.player?.id === lookup.player.id) clearPlayerSessionCookie(res);
+
+    res.json({ success: true, playerId: lookup.player.id });
+  }
+);
+
+apiRouter.post('/auth/login', requireSameOrigin, (req: AuthenticatedRequest, res: Response) => {
+  const { playerId, password } = req.body ?? {};
+  if (typeof playerId !== 'string' || !playerId || typeof password !== 'string' || !password) {
+    res.status(400).json({ error: 'Operative and password are required' });
+    return;
+  }
+
+  const player = db.getPlayer(playerId);
+  const storedHash = db.getPlayerPasswordHash(playerId);
+  if (!player || !verifyPassword(password, storedHash)) {
+    res.status(401).json({
+      error: 'Incorrect password. If no password is set, ask an administrator for a reset link.',
+    });
+    return;
   }
 
   createPlayerSession(res, player);
@@ -708,9 +750,8 @@ apiRouter.post('/admin/players', requireAdmin, (req: AuthenticatedRequest, res: 
   });
 });
 
-// Generate one-time authentication / invite link for a non-admin player.
-// Admin auth links may only be generated from the server console via
-// `npm run admin:link`.
+// Generate a one-time password reset link for a non-admin player. The admin
+// password is supplied only by ADMIN_PASSWORD in the server .env file.
 apiRouter.post('/admin/players/:id/auth-link', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
   const player = db.getPlayer(req.params.id);
   if (!player) {
@@ -719,7 +760,7 @@ apiRouter.post('/admin/players/:id/auth-link', requireAdmin, (req: Authenticated
   }
   if (player.isAdmin) {
     res.status(403).json({
-      error: 'Administrator auth links can only be generated from the server console.',
+      error: 'The admin password can only be set with ADMIN_PASSWORD in the server .env file.',
     });
     return;
   }
@@ -727,7 +768,7 @@ apiRouter.post('/admin/players/:id/auth-link', requireAdmin, (req: Authenticated
   const rawToken = generateSecureToken();
   const tokenHash = hashToken(rawToken);
   const inviteId = uuidv4();
-  const expiresAt = new Date(Date.now() + (30 * 24 * 60 * 60 * 1000)).toISOString(); // 30 days
+  const expiresAt = new Date(Date.now() + INVITE_MAX_AGE_MS).toISOString();
 
   db.createInvitation(inviteId, tokenHash, player.id, player.username, req.player?.id || null, expiresAt);
 

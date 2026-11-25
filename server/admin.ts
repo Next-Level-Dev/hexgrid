@@ -6,6 +6,7 @@
  * extra admin accounts are demoted when the server initializes.
  */
 import { db } from './db';
+import { hashPassword, validatePassword } from './auth';
 import { Player } from '../src/types/game';
 
 export const DEFAULT_ADMIN_ID = 'a0000000-0000-0000-0000-000000000001';
@@ -29,6 +30,16 @@ function createDefaultAdmin(): Player {
   };
   db.savePlayer(admin);
   return admin;
+}
+
+function applyAdminPassword(admin: Player) {
+  const password = process.env.ADMIN_PASSWORD;
+  const error = validatePassword(password);
+  if (error) {
+    console.warn(`[HexGrid Admin] ADMIN_PASSWORD is invalid: ${error}. The admin cannot sign in.`);
+    return;
+  }
+  db.setPlayerPasswordHash(admin.id, hashPassword(password as string));
 }
 
 /**
@@ -56,11 +67,13 @@ export function ensureSingleAdmin(): Player {
     }
   }
 
-  // Retire any admin invite links created before admin links became
-  // console-only. New admin links are tied to the admin player id and are
-  // created by scripts/admin-auth-link.ts.
+  applyAdminPassword(resolvedAdmin);
+
+  // Invitations are password reset links bound to a player id. Retire legacy
+  // username-only links so they cannot be used against the admin account.
   db.invalidateLegacyInvitationsForUsername(resolvedAdmin.username);
   db.invalidateLegacyInvitationsForUsername(DEFAULT_ADMIN_USERNAME);
+  db.invalidateInvitationsForPlayer(resolvedAdmin.id);
 
   return resolvedAdmin;
 }

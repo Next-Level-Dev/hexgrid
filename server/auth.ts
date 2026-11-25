@@ -1,9 +1,8 @@
 /**
- * Authentication and Session Management
- * Conforms to Master Specification Section 16 & 18:
- * - Secure hashed session tokens
- * - 3-month session cookies
- * - One-time invitation tokens
+ * Authentication, passwords and session management:
+ * - Scrypt-hashed account passwords
+ * - Hashed 30-day session tokens
+ * - One-time 7-day password reset invitations
  * - Admin authorization checks on protected APIs
  */
 import crypto from 'crypto';
@@ -13,8 +12,11 @@ import { db } from './db';
 import { Player } from '../src/types/game';
 
 export const SESSION_COOKIE_NAME = 'hexgrid_session';
-const SESSION_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000; // 3 months
+export const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+export const INVITE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const SESSION_REFRESH_THRESHOLD_MS = 24 * 60 * 60 * 1000;
+const PASSWORD_MIN_LENGTH = 8;
+const PASSWORD_MAX_LENGTH = 128;
 
 function getSessionCookieOptions(): CookieOptions {
   const secureOverride = process.env.SESSION_COOKIE_SECURE;
@@ -39,6 +41,37 @@ export function hashToken(token: string): string {
 
 export function generateSecureToken(): string {
   return crypto.randomBytes(32).toString('hex');
+}
+
+export function validatePassword(password: unknown): string | null {
+  if (typeof password !== 'string' || password.length < PASSWORD_MIN_LENGTH) {
+    return `Password must be at least ${PASSWORD_MIN_LENGTH} characters long`;
+  }
+  if (password.length > PASSWORD_MAX_LENGTH) {
+    return `Password must be at most ${PASSWORD_MAX_LENGTH} characters long`;
+  }
+  return null;
+}
+
+export function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16);
+  const derived = crypto.scryptSync(password, salt, 64);
+  return `scrypt$${salt.toString('hex')}$${derived.toString('hex')}`;
+}
+
+export function verifyPassword(password: unknown, storedHash: string | null): boolean {
+  if (typeof password !== 'string' || !storedHash) return false;
+  const [algorithm, saltHex, hashHex] = storedHash.split('$');
+  if (algorithm !== 'scrypt' || !saltHex || !hashHex) return false;
+
+  try {
+    const expected = Buffer.from(hashHex, 'hex');
+    if (expected.length === 0) return false;
+    const actual = crypto.scryptSync(password, Buffer.from(saltHex, 'hex'), expected.length);
+    return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -150,7 +183,7 @@ export function requireAuth(
   next: NextFunction
 ) {
   if (!req.player) {
-    res.status(401).json({ error: 'Authentication required. Please sign in or use an invitation link.' });
+    res.status(401).json({ error: 'Authentication required. Please sign in.' });
     return;
   }
   next();

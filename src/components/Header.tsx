@@ -11,6 +11,8 @@ import {
   X,
   Check,
   Languages,
+  LogIn,
+  LogOut,
 } from 'lucide-react';
 import { Player, GameRecord } from '../types/game';
 import { DEFAULT_MAP_SIZE, DEFAULT_PLAYER_HEALTH } from '../game/rules';
@@ -24,6 +26,8 @@ interface HeaderProps {
   onTogglePeaceVote: () => void;
   onOpenAdmin: () => void;
   onProfileUpdated: () => void;
+  onOpenLogin: () => void;
+  onLogout: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -34,6 +38,8 @@ export const Header: React.FC<HeaderProps> = ({
   onTogglePeaceVote,
   onOpenAdmin,
   onProfileUpdated,
+  onOpenLogin,
+  onLogout,
 }) => {
   const { language, toggleLanguage, t } = useI18n();
   const mapSize = game?.mapSize ?? DEFAULT_MAP_SIZE;
@@ -276,6 +282,14 @@ export const Header: React.FC<HeaderProps> = ({
                   <ShieldAlert className="w-4 h-4" />
                 </button>
               )}
+
+              <button
+                onClick={onLogout}
+                title={t('Sign out')}
+                className="p-2 rounded-lg bg-zinc-800 text-zinc-300 border border-zinc-700 hover:bg-zinc-700 hover:text-white"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
             </div>
           ) : (
             <div className="flex items-center gap-2">
@@ -287,7 +301,13 @@ export const Header: React.FC<HeaderProps> = ({
                 <Languages className="w-4 h-4" />
                 <span className="text-[10px] font-bold">{language.toUpperCase()}</span>
               </button>
-              <div className="text-xs text-zinc-400">{t('Not signed in')}</div>
+              <button
+                onClick={onOpenLogin}
+                className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5"
+              >
+                <LogIn className="w-3.5 h-3.5" />
+                {t('Not signed in')} · {t('Sign in')}
+              </button>
             </div>
           )}
         </div>

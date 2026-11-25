@@ -118,12 +118,14 @@ class GameDatabase {
         avatar_url TEXT NOT NULL,
         is_admin INTEGER NOT NULL DEFAULT 0,
         tokens INTEGER NOT NULL DEFAULT 0,
+        password_hash TEXT,
         games TEXT NOT NULL,
         stats TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
     `);
     this.ensureColumn('players', 'tokens', 'INTEGER NOT NULL DEFAULT 0');
+    this.ensureColumn('players', 'password_hash', 'TEXT');
 
     // Table: session_cookies
     this.db.exec(`
@@ -502,6 +504,17 @@ class GameDatabase {
     }
   }
 
+  setPlayerPasswordHash(playerId: string, passwordHash: string) {
+    const stmt = this.db.prepare('UPDATE players SET password_hash = ? WHERE id = ?');
+    stmt.run(passwordHash, playerId);
+  }
+
+  getPlayerPasswordHash(playerId: string): string | null {
+    const stmt = this.db.prepare('SELECT password_hash FROM players WHERE id = ?');
+    const row = stmt.get(playerId) as { password_hash: string | null } | undefined;
+    return row?.password_hash ?? null;
+  }
+
   private mapPlayerRow(row: any): Player {
     return {
       id: row.id,
@@ -594,15 +607,21 @@ class GameDatabase {
   }
 
   /**
-   * Invalidates legacy (pre player_id) invitations for a username. Used to
-   * retire admin invite links that were created before admin links became
-   * console-only.
+   * Invalidates legacy (pre player_id) invitations for a username so old
+   * username-only reset links cannot be reused.
    */
   invalidateLegacyInvitationsForUsername(username: string) {
     const stmt = this.db.prepare(
       'UPDATE invitations SET used = 1 WHERE used = 0 AND player_id IS NULL AND lower(username) = lower(?)'
     );
     stmt.run(username);
+  }
+
+  invalidateInvitationsForPlayer(playerId: string) {
+    const stmt = this.db.prepare(
+      'UPDATE invitations SET used = 1 WHERE used = 0 AND player_id = ?'
+    );
+    stmt.run(playerId);
   }
 }
 

@@ -303,10 +303,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           },
         }));
       } else {
-        alert(data.error || t('Failed to generate auth link'));
+        alert(data.error || t('Failed to generate reset link'));
       }
     } catch (err: any) {
-      alert(err.message || t('Error generating auth link'));
+      alert(err.message || t('Error generating reset link'));
     } finally {
       setGeneratingLinkForId(null);
     }
@@ -881,7 +881,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             {t('Create New Operative')}
           </h4>
           <p className="text-xs text-zinc-400">
-            {t('Registers a new operative in the database. Generating auth links and profile editing can be done for any existing player below.')}
+            {t('Registers a new operative in the database. Generating password reset links and profile editing can be done for any existing player below.')}
           </p>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -939,14 +939,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           )}
         </form>
 
-        {/* 3. Manage Existing Players & Generate Auth Links */}
+        {/* 3. Manage Existing Players & Generate Password Reset Links */}
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between">
             <h4 className="text-xs font-bold uppercase tracking-wider text-zinc-400">
               {t('Registered Operatives ({count})', { count: allPlayers.length })}
             </h4>
             <span className="text-[11px] text-zinc-500">
-              {t('Generate links or edit profiles for any player')}
+              {t('Generate reset links or edit profiles for any player')}
             </span>
           </div>
 
@@ -1031,24 +1031,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
                     {!isEditing && (
                       <div className="flex items-center gap-1.5">
-                        {/* Generate Auth Link Button (admin links are console-only) */}
+                        {/* Generate Password Reset Link (admin password is env-only) */}
                         {p.isAdmin ? (
                           <span
                             className="px-2.5 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-500 text-xs font-semibold flex items-center gap-1"
-                            title={t('Admin auth links can only be generated from the server console (npm run admin:link)')}
+                            title={t('The admin password is set with ADMIN_PASSWORD in the server .env file')}
                           >
                             <Key className="w-3.5 h-3.5" />
-                            <span>{t('Console only')}</span>
+                            <span>{t('Env only')}</span>
                           </span>
                         ) : (
                           <button
                             onClick={() => handleGenerateAuthLink(p.id)}
                             disabled={isGenerating}
                             className="px-2.5 py-1.5 rounded-lg bg-emerald-950/70 border border-emerald-700/60 hover:bg-emerald-900 text-emerald-300 text-xs font-semibold flex items-center gap-1"
-                            title={t('Generate one-time invite / auth link')}
+                            title={t('Generate one-time password reset link')}
                           >
                             <Key className="w-3.5 h-3.5" />
-                            <span>{isGenerating ? t('Generating...') : t('Auth Link')}</span>
+                            <span>{isGenerating ? t('Generating...') : t('Reset Link')}</span>
                           </button>
                         )}
 
@@ -1089,12 +1089,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     )}
                   </div>
 
-                  {/* Render generated auth link if available */}
+                  {/* Render generated password reset link if available */}
                   {linkInfo && (
                     <div className="mt-1 bg-zinc-950 border border-emerald-500/40 rounded-lg p-2 flex flex-col gap-1">
                       <div className="flex items-center justify-between text-[10px] text-emerald-400 font-bold uppercase">
                         <span>
-                          {t('One-Time Auth / Invite Link for {name}:', { name: p.username })}
+                          {t('One-Time Password Reset Link for {name}:', { name: p.username })}
                         </span>
                         <span className="text-zinc-500 font-normal">{t('Valid for 7 days')}</span>
                       </div>

@@ -14,6 +14,7 @@ import { GridMap } from './components/GridMap';
 import { ActionPlanner, ActionConfig } from './components/ActionPlanner';
 import { PlayerRoster } from './components/PlayerRoster';
 import { AdminPanel } from './components/AdminPanel';
+import { InviteDetails, InviteDialog, LoginDialog } from './components/AuthDialogs';
 import { AnimationPlaybackModal } from './components/AnimationPlaybackModal';
 import { triggerVictoryConfetti } from './utils/visualEffects';
 import {
@@ -60,6 +61,12 @@ export default function App() {
   const [allPlayers, setAllPlayers] = useState<Player[]>([]);
   const [isAdminOpen, setIsAdminOpen] = useState<boolean>(false);
   const [isProcessingRound, setIsProcessingRound] = useState<boolean>(false);
+
+  const [inviteToken, setInviteToken] = useState<string | null>(null);
+  const [inviteDetails, setInviteDetails] = useState<InviteDetails | null>(null);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [isLoginOpen, setIsLoginOpen] = useState<boolean>(false);
+  const [loginPlayerId, setLoginPlayerId] = useState<string | null>(null);
 
   // Action Planning States
   const [plannedActions, setPlannedActions] = useState<ActionData[]>([]);
@@ -138,20 +145,25 @@ export default function App() {
     const match = path.match(/^\/invite\/([a-zA-Z0-9]+)$/);
     if (match) {
       const token = match[1];
-      fetch('/api/auth/redeem-invite', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token }),
-      })
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.player) {
-            window.history.replaceState({}, '', '/');
-            loadMe();
-            loadGameCurrent();
-          }
+      fetch(`/api/auth/invite/${token}`)
+        .then(async (res) => {
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Invalid invitation link');
+          return data;
         })
-        .catch(console.error);
+        .then((data) => {
+          setInviteToken(token);
+          setInviteDetails(data.invitation);
+        })
+        .catch((err: any) => {
+          setInviteToken(token);
+          setInviteError(err.message || 'Invalid invitation link');
+        })
+        .finally(() => {
+          window.history.replaceState({}, '', '/');
+          loadMe();
+          loadGameCurrent();
+        });
     } else {
       loadMe();
       loadGameCurrent();
@@ -167,6 +179,32 @@ export default function App() {
     } catch (err) {
       console.error('Failed to load user session:', err);
     }
+  };
+
+  const handlePasswordSet = (playerId: string) => {
+    setInviteToken(null);
+    setInviteDetails(null);
+    setInviteError(null);
+    setLoginPlayerId(playerId);
+    setIsLoginOpen(true);
+  };
+
+  const handleLoggedIn = (loggedInPlayer: Player) => {
+    setPlayer(loggedInPlayer);
+    setIsLoginOpen(false);
+    setLoginPlayerId(null);
+    loadMe();
+  };
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch (err) {
+      console.error('Failed to sign out:', err);
+    }
+    setPlayer(null);
+    setIsLoginOpen(true);
+    loadMe();
   };
 
   const loadGameCurrent = async () => {
@@ -1355,6 +1393,8 @@ export default function App() {
             onTogglePeaceVote={handleTogglePeaceVote}
             onOpenAdmin={() => setIsAdminOpen(true)}
             onProfileUpdated={loadMe}
+            onOpenLogin={() => setIsLoginOpen(true)}
+            onLogout={handleLogout}
           />
         </div>
 
@@ -1605,6 +1645,28 @@ export default function App() {
         onUpdateAssassinationCost={handleAdminUpdateAssassinationCost}
         onEndGameWorldPeace={handleAdminEndGameWorldPeace}
         isProcessing={isProcessingRound}
+      />
+
+      {(inviteToken || inviteError) && (
+        <InviteDialog
+          token={inviteToken}
+          invite={inviteDetails}
+          error={inviteError}
+          onPasswordSet={handlePasswordSet}
+          onClose={() => {
+            setInviteToken(null);
+            setInviteDetails(null);
+            setInviteError(null);
+          }}
+        />
+      )}
+
+      <LoginDialog
+        isOpen={isLoginOpen}
+        allPlayers={allPlayers}
+        initialPlayerId={loginPlayerId}
+        onClose={() => setIsLoginOpen(false)}
+        onLoggedIn={handleLoggedIn}
       />
     </div>
   );
