@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   Clock,
   Coins,
@@ -7,9 +7,6 @@ import {
   Crown,
   Handshake,
   ShieldAlert,
-  Edit3,
-  X,
-  Check,
   Languages,
   LogIn,
   LogOut,
@@ -25,7 +22,6 @@ interface HeaderProps {
   player: Player | null;
   onTogglePeaceVote: () => void;
   onOpenAdmin: () => void;
-  onProfileUpdated: () => void;
   onOpenLogin: () => void;
   onLogout: () => void;
 }
@@ -37,7 +33,6 @@ export const Header: React.FC<HeaderProps> = ({
   player,
   onTogglePeaceVote,
   onOpenAdmin,
-  onProfileUpdated,
   onOpenLogin,
   onLogout,
 }) => {
@@ -60,13 +55,6 @@ export const Header: React.FC<HeaderProps> = ({
       ).toLocaleUpperCase(language === 'tr' ? 'tr-TR' : 'en-US')
     : '';
 
-  // Profile Edit modal
-  const [isEditingProfile, setIsEditingProfile] = useState(false);
-  const [profileUsername, setProfileUsername] = useState(player?.username || '');
-  const [profileAvatarUrl, setProfileAvatarUrl] = useState(player?.avatarUrl || '');
-  const [isSavingProfile, setIsSavingProfile] = useState(false);
-  const [profileError, setProfileError] = useState<string | null>(null);
-
   const formatTimer = (totalSeconds: number) => {
     if (isUnstarted) return t('WAITING TO LAUNCH');
     if (isHistorical) return '00:00:00';
@@ -74,38 +62,6 @@ export const Header: React.FC<HeaderProps> = ({
     const m = Math.floor((totalSeconds % 3600) / 60);
     const s = totalSeconds % 60;
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-  };
-
-  const handleSaveProfile = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!profileUsername.trim()) {
-      setProfileError(t('Username cannot be empty'));
-      return;
-    }
-    setIsSavingProfile(true);
-    setProfileError(null);
-
-    try {
-      const res = await fetch('/api/players/profile', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username: profileUsername.trim(),
-          avatarUrl: profileAvatarUrl.trim() || undefined,
-        }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setIsEditingProfile(false);
-        onProfileUpdated();
-      } else {
-        setProfileError(data.error || t('Failed to update profile'));
-      }
-    } catch (err: any) {
-      setProfileError(err.message || t('Error updating profile'));
-    } finally {
-      setIsSavingProfile(false);
-    }
   };
 
   return (
@@ -203,18 +159,6 @@ export const Header: React.FC<HeaderProps> = ({
                       {t('DEAD')}
                     </span>
                   )}
-                  {/* Edit profile button */}
-                  <button
-                    onClick={() => {
-                      setProfileUsername(player.username);
-                      setProfileAvatarUrl(player.avatarUrl);
-                      setIsEditingProfile(true);
-                    }}
-                    title={t('Change Profile')}
-                    className="p-1 rounded text-zinc-400 hover:text-white hover:bg-zinc-800"
-                  >
-                    <Edit3 className="w-3 h-3" />
-                  </button>
                 </div>
 
                 {/* Health & Points (if in active game) */}
@@ -286,9 +230,10 @@ export const Header: React.FC<HeaderProps> = ({
               <button
                 onClick={onLogout}
                 title={t('Sign out')}
-                className="p-2 rounded-lg bg-zinc-800 text-zinc-300 border border-zinc-700 hover:bg-zinc-700 hover:text-white"
+                className="px-2.5 py-1.5 rounded-lg bg-zinc-800 text-zinc-300 border border-zinc-700 hover:bg-zinc-700 hover:text-white text-[11px] font-semibold flex items-center gap-1.5"
               >
-                <LogOut className="w-4 h-4" />
+                <LogOut className="w-3.5 h-3.5" />
+                {t('Sign out')}
               </button>
             </div>
           ) : (
@@ -312,75 +257,6 @@ export const Header: React.FC<HeaderProps> = ({
           )}
         </div>
       </div>
-
-      {/* Edit Profile Popover Modal */}
-      {isEditingProfile && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-          <form
-            onSubmit={handleSaveProfile}
-            className="bg-zinc-950 border border-zinc-800 rounded-xl p-5 max-w-sm w-full flex flex-col gap-3 shadow-2xl"
-          >
-            <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-white">
-                {t('Edit Operative Profile')}
-              </h3>
-              <button
-                type="button"
-                onClick={() => setIsEditingProfile(false)}
-                className="text-zinc-400 hover:text-white"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {profileError && (
-              <div className="text-xs text-red-400 bg-red-950/50 p-2 rounded border border-red-800">
-                {profileError}
-              </div>
-            )}
-
-            <div>
-              <label className="text-[11px] text-zinc-400 block mb-1">{t('Codename / Username')}</label>
-              <input
-                type="text"
-                required
-                value={profileUsername}
-                onChange={(e) => setProfileUsername(e.target.value)}
-                className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-xs text-white"
-              />
-            </div>
-
-            <div>
-              <label className="text-[11px] text-zinc-400 block mb-1">{t('Avatar Image URL')}</label>
-              <input
-                type="text"
-                value={profileAvatarUrl}
-                onChange={(e) => setProfileAvatarUrl(e.target.value)}
-                placeholder="https://..."
-                className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-xs text-white"
-              />
-            </div>
-
-            <div className="flex justify-end gap-2 mt-2">
-              <button
-                type="button"
-                onClick={() => setIsEditingProfile(false)}
-                className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs rounded-lg"
-              >
-                {t('Cancel')}
-              </button>
-              <button
-                type="submit"
-                disabled={isSavingProfile}
-                className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg shadow disabled:opacity-50 flex items-center gap-1"
-              >
-                <Check className="w-3.5 h-3.5" />
-                {isSavingProfile ? t('Saving...') : t('Save Profile')}
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
     </header>
   );
 };

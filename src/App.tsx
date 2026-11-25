@@ -1392,7 +1392,6 @@ export default function App() {
             player={activePlayer}
             onTogglePeaceVote={handleTogglePeaceVote}
             onOpenAdmin={() => setIsAdminOpen(true)}
-            onProfileUpdated={loadMe}
             onOpenLogin={() => setIsLoginOpen(true)}
             onLogout={handleLogout}
           />

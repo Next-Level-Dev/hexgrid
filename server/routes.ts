@@ -296,35 +296,6 @@ apiRouter.post('/auth/login', requireSameOrigin, (req: AuthenticatedRequest, res
   res.json({ success: true, player });
 });
 
-// Update profile for currently authenticated player
-apiRouter.patch('/players/profile', requireAuth, (req: AuthenticatedRequest, res: Response) => {
-  const player = req.player!;
-  const { username, avatarUrl } = req.body;
-  if (username && username.trim()) {
-    const trimmed = username.trim();
-    if (findPlayerByUsername(trimmed, player.id)) {
-      res.status(409).json({ error: 'That username is already taken' });
-      return;
-    }
-    player.username = trimmed;
-  }
-  if (avatarUrl && avatarUrl.trim()) player.avatarUrl = avatarUrl.trim();
-
-  db.savePlayer(player);
-
-  const game = db.getCurrentGame();
-  if (game && game.currentDay > 0) {
-    const state = db.getGameState(game.id, game.currentDay);
-    if (state && state.data.players[player.id]) {
-      state.data.players[player.id].username = player.username;
-      state.data.players[player.id].avatarUrl = player.avatarUrl;
-      db.saveGameState(state);
-    }
-  }
-
-  res.json({ success: true, player });
-});
-
 // Logout
 apiRouter.post(
   '/auth/logout',
